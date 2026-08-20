@@ -1,0 +1,11 @@
+[Unit]
+Description=Ensure Raspotify configured and running for NOVA
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash __NOVA_PROJECT_ROOT__/scripts/autostart_spotify.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

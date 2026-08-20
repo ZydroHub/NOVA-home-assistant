@@ -1,0 +1,54 @@
+# Web & API
+--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+python-dotenv==1.0.1
+fastapi==0.129.2
+annotated-doc==0.0.4
+apscheduler==3.10.4
+uvicorn==0.41.0
+pydantic==2.12.5
+websockets==16.0
+spotipy==2.25.1
+requests==2.32.5
+
+# System & async
+psutil==7.2.2
+numpy==2.2.6
+
+# Audio I/O (STT capture)
+# System dependency (Debian/Ubuntu): sudo apt-get update && sudo apt-get install -y portaudio19-dev
+PyAudio==0.2.14
+
+# Speech-to-text
+faster-whisper==1.2.1
+vosk==0.3.45
+scipy==1.14.1
+
+# Text-to-speech (Piper)
+piper-tts==1.4.1
+onnxruntime==1.23.2
+
+# Build tools for llama-cpp-python (needed when wheel is not available)
+ninja==1.13.0
+cmake==4.2.0
+
+# Local LLM & model download
+llama-cpp-python==0.3.16
+huggingface-hub==1.4.1
+tqdm==4.67.1
+
+# Web search (tool_ai)
+ddgs==9.9.3
+
+# Optional: Raspberry Pi camera (install on device; often via apt or --system-site-packages)
+# picamera2==0.3.34
+
+# Semantic routing (semantic_router.py): pip install "semantic-router[local]"
+# semantic-router[local]
+
+# Hailo object detection (object_detection.py + hailo_od)
+# lap>=0.4.0
+# cython_bbox  # may need building on Pi; install from project .venv
+PyYAML==6.0.3
+
+# Testing (optional): pip install pytest then run pytest tests/
+pytest==8.4.2

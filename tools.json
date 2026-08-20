@@ -1,0 +1,58 @@
+[
+  {
+    "name": "get_weather",
+    "description": "Retrieves current weather or forecast for a specific location.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "location": {
+          "type": "string",
+          "description": "The city and state/country, e.g., 'San Francisco, CA' or 'local'"
+        }
+      },
+      "required": [
+        "location"
+      ]
+    }
+  },
+  {
+    "name": "web_search",
+    "description": "Performs a live internet search to retrieve snippets for current events or facts.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "The search query"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "network_scan",
+    "description": "Scans the local network (LAN) to identify connected devices and open ports.",
+    "parameters": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "play_music",
+    "description": "Starts or resumes Spotify music without pausing music that is already playing.",
+    "parameters": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "get_current_music",
+    "description": "Reports the Spotify song and artist currently playing, or says that no music is playing.",
+    "parameters": {
+      "type": "object",
+      "properties": {}
+    }
+  }
+]

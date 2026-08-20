@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NOVA
+Comment=Start NOVA (backend + chat GUI)
+Exec=bash -lc 'PROJECT="${NOVA_PROJECT_ROOT:-$HOME/NOVA}"; exec "$PROJECT/scripts/start-nova.sh"'
+Terminal=true
+Icon=applications-internet
+Categories=Utility;
