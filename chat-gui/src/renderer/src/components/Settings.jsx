@@ -25,9 +25,9 @@ const KEY_SCANLINES_ENABLED = 'nova.scanlinesEnabled';
 const KEY_STATUS_BAR_ENABLED = 'nova.statusBarEnabled';
 const CONFIGURABLE_NAV_ITEMS = NAV_ITEMS.filter((item) => !item.required);
 const VOICE_LANGUAGE_OPTIONS = [
-    { value: 'en', title: 'English', subtitle: 'Voice commands in English' },
-    { value: 'sv', title: 'Swedish', subtitle: 'Voice commands in Swedish' },
-    { value: 'auto', title: 'Auto', subtitle: 'Let Whisper detect speech language' },
+    { value: 'en', title: 'English', description: 'Voice commands in English' },
+    { value: 'sv', title: 'Swedish', description: 'Voice commands in Swedish' },
+    { value: 'auto', title: 'Auto', description: 'Let Whisper detect speech language' },
 ];
 function readStoredBool(key, defaultValue = true) {
     try {
@@ -39,14 +39,13 @@ function readStoredBool(key, defaultValue = true) {
     }
 }
 
-function Panel({ title, eyebrow, icon: Icon, accent = 'cyan', children, className = '' }) {
+function Panel({ title, icon: Icon, accent = 'cyan', children, className = '' }) {
     const accentClass = accent === 'emerald' ? 'from-emerald-300/25 to-cyan-300/10' : accent === 'rose' ? 'from-rose-300/25 to-cyan-300/10' : 'from-cyan-300/25 to-sky-300/10';
     return (
         <motion.section variants={panelEntrance} className={`relative overflow-hidden rounded-[28px] border border-cyan-100/[0.14] bg-[rgba(6,13,30,0.62)] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.34)] backdrop-blur-2xl ${className}`}>
             <div className={`pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r ${accentClass}`} />
             <div className="mb-5 flex items-start justify-between gap-4">
                 <div>
-                    <div className="text-[10px] uppercase tracking-[0.22em] text-cyan-100/50">{eyebrow}</div>
                     <h2 className="mt-1 flex items-center gap-2 font-['Plus_Jakarta_Sans'] text-lg font-bold text-cyan-50">
                         {Icon ? <Icon size={18} className="text-cyan-200/[0.85]" /> : null}
                         {title}
@@ -84,7 +83,7 @@ function ToggleSwitch({ checked, onChange, disabled = false, label }) {
     );
 }
 
-function SettingRow({ icon: Icon, title, subtitle, children }) {
+function SettingRow({ icon: Icon, title, description, children }) {
     return (
         <motion.div variants={panelEntrance} className="flex min-h-[64px] items-center justify-between gap-4 rounded-[20px] border border-white/[0.08] bg-white/[0.035] px-4 py-3 transition-colors hover:bg-white/[0.055]">
             <div className="flex min-w-0 items-center gap-3">
@@ -95,7 +94,7 @@ function SettingRow({ icon: Icon, title, subtitle, children }) {
                 ) : null}
                 <div className="min-w-0">
                     <div className="truncate font-['Plus_Jakarta_Sans'] text-sm font-semibold text-cyan-50">{title}</div>
-                    {subtitle ? <div className="mt-0.5 text-xs leading-snug text-cyan-100/50">{subtitle}</div> : null}
+                    {description ? <div className="mt-0.5 text-xs leading-snug text-cyan-100/50">{description}</div> : null}
                 </div>
             </div>
             {children}
@@ -108,10 +107,6 @@ export default function Settings() {
     const [scanlinesEnabled, setScanlinesEnabled] = React.useState(() => readStoredBool(KEY_SCANLINES_ENABLED, true));
     const [statusBarEnabled, setStatusBarEnabled] = React.useState(() => readStoredBool(KEY_STATUS_BAR_ENABLED, true));
     const [hiddenTabs, setHiddenTabs] = React.useState(readHiddenTabs);
-    const [audioSource, setAudioSource] = React.useState('spotify');
-    const [audioSourceLoading, setAudioSourceLoading] = React.useState(true);
-    const [audioSourceState, setAudioSourceState] = React.useState('idle');
-    const [audioSourceError, setAudioSourceError] = React.useState('');
     const [voiceLanguage, setVoiceLanguage] = React.useState('en');
     const [voiceAlwaysListening, setVoiceAlwaysListening] = React.useState(true);
     const [voiceSettingsLoading, setVoiceSettingsLoading] = React.useState(true);
@@ -211,34 +206,6 @@ export default function Settings() {
     React.useEffect(() => {
         let cancelled = false;
 
-        const loadAudioSource = async () => {
-            try {
-                const result = await apiFetch('/system/audio-source');
-                if (!cancelled) {
-                    setAudioSource((result?.audio_source || 'spotify').toString());
-                    setAudioSourceError('');
-                }
-            } catch (error) {
-                if (!cancelled) {
-                    setAudioSourceError(error?.message || 'Failed to load audio source setting.');
-                }
-            } finally {
-                if (!cancelled) {
-                    setAudioSourceLoading(false);
-                }
-            }
-        };
-
-        loadAudioSource();
-
-        return () => {
-            cancelled = true;
-        };
-    }, []);
-
-    React.useEffect(() => {
-        let cancelled = false;
-
         const loadVoiceSettings = async () => {
             try {
                 const result = await apiFetch('/settings/voice');
@@ -264,22 +231,6 @@ export default function Settings() {
             cancelled = true;
         };
     }, []);
-
-    const handleAudioSourceChange = async (source) => {
-        if (!source || source === audioSource || audioSourceState !== 'idle') return;
-
-        setAudioSourceState(source);
-        setAudioSourceError('');
-        try {
-            const result = await apiFetch(`/system/audio-source/${source}`, { method: 'POST' });
-            setAudioSource((result?.audio_source || source).toString());
-            window.dispatchEvent(new CustomEvent('nova-settings-updated'));
-        } catch (error) {
-            setAudioSourceError(error?.message || 'Failed to update audio source.');
-        } finally {
-            setAudioSourceState('idle');
-        }
-    };
 
     const handleVoiceLanguageChange = async (language) => {
         if (!language || language === voiceLanguage || voiceSettingsPending) return;
@@ -432,7 +383,6 @@ export default function Settings() {
                 <header className="flex flex-shrink-0 items-center justify-between gap-4 border-b border-cyan-100/[0.12] bg-black/20 px-5 py-4 backdrop-blur-xl">
                     <div className="flex min-w-0 items-center gap-4">
                         <div className="min-w-0">
-                            <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-100/50">NOVA Core</div>
                             <h1 className="truncate font-['Plus_Jakarta_Sans'] text-2xl font-black text-white md:text-3xl">Settings</h1>
                         </div>
                     </div>
@@ -444,43 +394,7 @@ export default function Settings() {
                     data-scroll-lock-nav="true"
                 >
                     <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.04fr)_minmax(360px,0.96fr)]">
-                        <Panel title="Runtime Source" eyebrow="Audio routing" icon={Radio}>
-                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                                {[
-                                    { value: 'spotify', title: 'Spotify', subtitle: 'Music dashboard route' },
-                                    { value: 'google-assistant', title: 'Google Assistant', subtitle: 'Assistant audio route' },
-                                ].map((source) => {
-                                    const active = audioSource === source.value;
-                                    const busy = audioSourceState === source.value;
-                                    return (
-                                        <button
-                                            key={source.value}
-                                            type="button"
-                                            onClick={() => handleAudioSourceChange(source.value)}
-                                            disabled={audioSourceState !== 'idle' || audioSourceLoading}
-                                            className={`min-h-[112px] rounded-[24px] border p-4 text-left transition-all duration-200 hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 ${
-                                                active
-                                                    ? 'border-cyan-200/70 bg-cyan-300/[0.13] shadow-[0_0_32px_rgba(34,211,238,0.16)]'
-                                                    : 'border-white/10 bg-white/[0.035] hover:border-cyan-100/[0.28] hover:bg-white/[0.055]'
-                                            }`}
-                                        >
-                                            <div className="flex items-center justify-between gap-3">
-                                                <span className="font-['Plus_Jakarta_Sans'] text-base font-bold text-cyan-50">{source.title}</span>
-                                                {busy ? <Loader2 size={17} className="animate-spin text-cyan-100" /> : active ? <Check size={17} className="text-cyan-100" /> : null}
-                                            </div>
-                                            <div className="mt-2 text-sm text-cyan-100/50">{source.subtitle}</div>
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                            {audioSourceError ? (
-                                <div className="mt-4 rounded-2xl border border-rose-300/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
-                                    {audioSourceError}
-                                </div>
-                            ) : null}
-                        </Panel>
-
-                        <Panel title="Voice Recognition" eyebrow="Speech input" icon={Languages}>
+                        <Panel title="Voice Recognition" icon={Languages}>
                             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                                 {VOICE_LANGUAGE_OPTIONS.map((language) => {
                                     const active = voiceLanguage === language.value;
@@ -501,7 +415,7 @@ export default function Settings() {
                                                 <span className="font-['Plus_Jakarta_Sans'] text-base font-bold text-cyan-50">{language.title}</span>
                                                 {busy ? <Loader2 size={17} className="animate-spin text-cyan-100" /> : active ? <Check size={17} className="text-cyan-100" /> : null}
                                             </div>
-                                            <div className="mt-2 text-sm text-cyan-100/50">{language.subtitle}</div>
+                                            <div className="mt-2 text-sm text-cyan-100/50">{language.description}</div>
                                         </button>
                                     );
                                 })}
@@ -510,7 +424,7 @@ export default function Settings() {
                                 <SettingRow
                                     icon={Radio}
                                     title="Always listening"
-                                    subtitle="Listens for Nova and interrupts active speech"
+                                    description="Listens for Nova and interrupts active speech"
                                 >
                                     <ToggleSwitch
                                         checked={voiceAlwaysListening}
@@ -527,21 +441,21 @@ export default function Settings() {
                             ) : null}
                         </Panel>
 
-                        <Panel title="Interface Systems" eyebrow="Visual controls" icon={Activity}>
+                        <Panel title="Interface Systems" icon={Activity}>
                             <div className="space-y-3">
-                                <SettingRow icon={Keyboard} title="Popup keyboard" subtitle="Touch-friendly overlay input">
+                                <SettingRow icon={Keyboard} title="Popup keyboard" description="Touch-friendly overlay input">
                                     <ToggleSwitch checked={keyboardEnabled} onChange={setKeyboardEnabled} label="Popup keyboard" />
                                 </SettingRow>
-                                <SettingRow icon={ScanLine} title="Ambient scanlines" subtitle="CRT atmosphere over content">
+                                <SettingRow icon={ScanLine} title="Ambient scanlines" description="CRT atmosphere over content">
                                     <ToggleSwitch checked={scanlinesEnabled} onChange={setScanlinesEnabled} label="Ambient scanlines" />
                                 </SettingRow>
-                                <SettingRow icon={Activity} title="Status bar" subtitle="System statistics and clock strip">
+                                <SettingRow icon={Activity} title="Status bar" description="System statistics and clock strip">
                                     <ToggleSwitch checked={statusBarEnabled} onChange={setStatusBarEnabled} label="Status bar" />
                                 </SettingRow>
                             </div>
                         </Panel>
 
-                        <Panel title="Visible Tabs" eyebrow="Navigation" icon={Eye}>
+                        <Panel title="Visible Tabs" icon={Eye}>
                             <div className="space-y-3">
                                 {CONFIGURABLE_NAV_ITEMS.map((item) => {
                                     const visible = !hiddenTabs.includes(item.id);
@@ -551,7 +465,7 @@ export default function Settings() {
                                             key={item.id}
                                             icon={visible ? Icon : EyeOff}
                                             title={item.label}
-                                            subtitle={visible ? 'Shown in side navigation and swipe flow' : 'Hidden from side navigation and swipe flow'}
+                                            description={visible ? 'Shown in side navigation' : 'Hidden from side navigation'}
                                         >
                                             <ToggleSwitch
                                                 checked={visible}
@@ -564,16 +478,16 @@ export default function Settings() {
                             </div>
                         </Panel>
 
-                        <Panel title="Location Alerts" eyebrow="Subscriptions" icon={MapPin}>
+                        <Panel title="Location Alerts" icon={MapPin}>
                             <div className="space-y-3">
                                 {[
                                     ['nacka', 'Nacka', 'Local municipal alerts'],
                                     ['stockholm', 'Stockholm', 'Regional city signal'],
-                                ].map(([region, label, subtitle]) => {
+                                ].map(([region, label, description]) => {
                                     const enabled = Boolean(alertSettings[region]);
                                     const pending = alertSettingsPending === region;
                                     return (
-                                        <SettingRow key={region} icon={MapPin} title={label} subtitle={subtitle}>
+                                        <SettingRow key={region} icon={MapPin} title={label} description={description}>
                                             <ToggleSwitch
                                                 checked={enabled}
                                                 onChange={(nextEnabled) => handleAlertSettingChange(region, nextEnabled)}
@@ -592,9 +506,9 @@ export default function Settings() {
                             ) : null}
                         </Panel>
 
-                        <Panel title="Telegram Relay" eyebrow="Push channel" icon={Bell}>
+                        <Panel title="Telegram Relay" icon={Bell}>
                             <div className="space-y-3">
-                                <SettingRow icon={Bell} title="Startup notification" subtitle="Send online signal when NOVA boots">
+                                <SettingRow icon={Bell} title="Startup notification" description="Send online signal when NOVA boots">
                                     <ToggleSwitch
                                         checked={telegramStartupNotifications}
                                         onChange={handleTelegramStartupNotificationsChange}
@@ -620,7 +534,7 @@ export default function Settings() {
                             </div>
                         </Panel>
 
-                        <Panel title="Power Control" eyebrow="Session" icon={Power} accent="rose">
+                        <Panel title="Power Control" icon={Power} accent="rose">
                             <div className="rounded-[22px] border border-rose-200/[0.14] bg-rose-500/[0.08] p-4">
                                 <div className="font-['Plus_Jakarta_Sans'] text-base font-bold text-rose-50">Shutdown NOVA</div>
                                 <p className="mt-1 text-sm leading-relaxed text-rose-100/[0.55]">Close the local GUI session and notify the backend.</p>

@@ -266,7 +266,6 @@ export default function NewsPage() {
                                         key={option.value}
                                         type="button"
                                         onClick={() => setRegion(option.value)}
-                                        data-no-swipe-nav="true"
                                         className={`px-3 py-1.5 text-xs rounded-full border font-semibold tracking-[0.14em] uppercase transition ${
                                             active
                                                 ? 'border-cyan-200 bg-cyan-300/25 text-white'
@@ -284,7 +283,6 @@ export default function NewsPage() {
                         <motion.button
                             type="button"
                             onClick={() => loadAlerts({ initial: false, force: true })}
-                            data-no-swipe-nav="true"
                             className="px-3 py-1.5 text-xs rounded-full border border-cyan-300/40 bg-cyan-400/15 text-cyan-50 hover:bg-cyan-300/25 transition uppercase tracking-[0.14em] font-semibold"
                             whileHover={{ y: -1, scale: 1.02 }}
                             whileTap={{ scale: 0.98 }}

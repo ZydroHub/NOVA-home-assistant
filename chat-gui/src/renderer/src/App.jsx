@@ -15,7 +15,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import VirtualKeyboard from './components/VirtualKeyboard';
 import { WebSocketProvider } from './contexts/WebSocketContext';
 import { KeyboardProvider, useKeyboardSettings } from './contexts/KeyboardContext';
-import { getVisibleNavItems, isRouteVisible, readHiddenTabs } from './navigationSettings';
+import { isRouteVisible, readHiddenTabs } from './navigationSettings';
 
 const KEY_SCANLINES_ENABLED = 'nova.scanlinesEnabled';
 const KEY_STATUS_BAR_ENABLED = 'nova.statusBarEnabled';
@@ -50,14 +50,8 @@ function OverlayKeyboard() {
 
 const AnimatedRoutes = () => {
   const location = useLocation();
-  const [swipeDirection, setSwipeDirection] = React.useState(0);
   const [hiddenTabs, setHiddenTabs] = React.useState(readHiddenTabs);
   const navigate = useNavigate();
-  const lastNavAtRef = React.useRef(0);
-  const pointerStartRef = React.useRef(null);
-
-  const routes = getVisibleNavItems(hiddenTabs).map((item) => item.to);
-  const currentIndex = routes.indexOf(location.pathname);
 
   React.useEffect(() => {
     const syncHiddenTabs = () => setHiddenTabs(readHiddenTabs());
@@ -75,75 +69,15 @@ const AnimatedRoutes = () => {
     }
   }, [hiddenTabs, location.pathname, navigate]);
 
-  const canNavigateNow = () => Date.now() - lastNavAtRef.current > 450;
-
-  const isNoSwipeTarget = (target) => {
-    if (!target || typeof target.closest !== 'function') return false;
-    return Boolean(
-      target.closest(
-        'button, a, input, select, textarea, option, [role="button"], [role="listbox"], [role="option"], [data-no-swipe-nav], .touch-scroll-y, [data-scroll-lock-nav]'
-      )
-    );
-  };
-
-  const navigateBy = (direction) => {
-    if (!canNavigateNow()) return;
-    if (currentIndex < 0) return;
-    const nextIndex = currentIndex + direction;
-    if (nextIndex < 0 || nextIndex >= routes.length) return;
-    setSwipeDirection(direction);
-    lastNavAtRef.current = Date.now();
-    navigate(routes[nextIndex]);
-  };
-
-  const handleWheel = (e) => {
-    const horizontalIntent = Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.5;
-    if (!horizontalIntent) return;
-    if (Math.abs(e.deltaX) < 140) return;
-    e.preventDefault();
-    navigateBy(e.deltaX > 0 ? 1 : -1);
-  };
-
-  const handlePointerDown = (e) => {
-    if (isNoSwipeTarget(e.target)) {
-      pointerStartRef.current = null;
-      return;
-    }
-    pointerStartRef.current = { x: e.clientX, y: e.clientY, ts: Date.now() };
-  };
-
-  const handlePointerUp = (e) => {
-    if (isNoSwipeTarget(e.target)) {
-      pointerStartRef.current = null;
-      return;
-    }
-    const start = pointerStartRef.current;
-    pointerStartRef.current = null;
-    if (!start) return;
-
-    const dx = e.clientX - start.x;
-    const dy = e.clientY - start.y;
-    const dt = Date.now() - start.ts;
-    const absX = Math.abs(dx);
-    const absY = Math.abs(dy);
-    const isHorizontalSwipe = absX > 170 && absX > absY * 1.8 && dt < 900;
-
-    if (!isHorizontalSwipe) return;
-    navigateBy(dx < 0 ? 1 : -1);
-  };
-
   return (
     <AnimatePresence mode="wait">
       <motion.div
         key={location.pathname}
         className="h-full min-h-0 overflow-hidden touch-pan-y"
-        initial={{ opacity: 0, x: swipeDirection * 72, y: 18, scale: 0.992 }}
+        initial={{ opacity: 0, y: 18, scale: 0.992 }}
         animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
-        exit={{ opacity: 0, x: -swipeDirection * 72, y: -10, scale: 0.996 }}
+        exit={{ opacity: 0, y: -10, scale: 0.996 }}
         transition={{ type: 'spring', stiffness: 420, damping: 34, mass: 0.65 }}
-        onWheel={handleWheel}
-        onPointerDown={handlePointerDown}
-        onPointerUp={handlePointerUp}
       >
         <Routes location={location}>
           <Route path="/" element={<Home />} />
