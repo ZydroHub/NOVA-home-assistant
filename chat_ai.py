@@ -11,6 +11,8 @@ import logging
 import os
 import queue
 import re
+import ipaddress
+import socket
 import subprocess
 import sys
 import time
@@ -20,7 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from quiet_io import silence_stderr_fd
 
-from fastapi import APIRouter, Depends, Header, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import APIRouter, Depends, Header, Request, WebSocket, WebSocketDisconnect, HTTPException
 from huggingface_hub import hf_hub_download
 try:
     from llama_cpp import Llama
@@ -1232,15 +1234,53 @@ router = APIRouter()
 ai = AIState()
 
 
-def require_control_auth(x_nova_token: str | None = Header(default=None, alias="X-NOVA-Token")) -> None:
+def require_control_auth(
+    request: Request,
+    x_nova_token: str | None = Header(default=None, alias="X-NOVA-Token"),
+) -> None:
     """Require the local GUI token for conversation mutations."""
-    if not is_valid_control_token(x_nova_token):
+    client_host = request.client.host if request.client else None
+    if not is_valid_control_token(x_nova_token) and not _is_local_client(client_host):
         raise HTTPException(status_code=401, detail="Missing or invalid local GUI authorization.")
+
+
+def _normalized_ip_address(host: str | None) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    if not host:
+        return None
+    if host.lower() == "localhost":
+        return ipaddress.ip_address("127.0.0.1")
+    try:
+        address = ipaddress.ip_address(host.split("%", 1)[0])
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            return address.ipv4_mapped
+        return address
+    except ValueError:
+        return None
+
+
+def _is_local_client(host: str | None) -> bool:
+    address = _normalized_ip_address(host)
+    if address is None:
+        return False
+    if address.is_loopback:
+        return True
+
+    try:
+        local_addresses = {
+            _normalized_ip_address(info[4][0])
+            for info in socket.getaddrinfo(socket.gethostname(), None)
+            if info[4]
+        }
+    except OSError:
+        local_addresses = set()
+    return address in local_addresses
 
 
 async def authorize_control_websocket(websocket: WebSocket) -> bool:
     """Reject unauthenticated WebSocket clients before accepting the socket."""
-    if is_valid_control_token(websocket.query_params.get("token")):
+    token = websocket.query_params.get("token")
+    client_host = websocket.client.host if websocket.client else None
+    if is_valid_control_token(token) or (not token and _is_local_client(client_host)):
         return True
     await websocket.close(code=1008, reason="Missing or invalid local GUI authorization")
     return False

@@ -15,6 +15,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import VirtualKeyboard from './components/VirtualKeyboard';
 import { WebSocketProvider } from './contexts/WebSocketContext';
 import { KeyboardProvider, useKeyboardSettings } from './contexts/KeyboardContext';
+import { getVisibleNavItems, isRouteVisible, readHiddenTabs } from './navigationSettings';
 
 const KEY_SCANLINES_ENABLED = 'nova.scanlinesEnabled';
 const KEY_STATUS_BAR_ENABLED = 'nova.statusBarEnabled';
@@ -50,12 +51,29 @@ function OverlayKeyboard() {
 const AnimatedRoutes = () => {
   const location = useLocation();
   const [swipeDirection, setSwipeDirection] = React.useState(0);
+  const [hiddenTabs, setHiddenTabs] = React.useState(readHiddenTabs);
   const navigate = useNavigate();
   const lastNavAtRef = React.useRef(0);
   const pointerStartRef = React.useRef(null);
 
-  const routes = ['/', '/chat', '/music', '/news', '/weather', '/settings'];
+  const routes = getVisibleNavItems(hiddenTabs).map((item) => item.to);
   const currentIndex = routes.indexOf(location.pathname);
+
+  React.useEffect(() => {
+    const syncHiddenTabs = () => setHiddenTabs(readHiddenTabs());
+    window.addEventListener('storage', syncHiddenTabs);
+    window.addEventListener('nova-settings-updated', syncHiddenTabs);
+    return () => {
+      window.removeEventListener('storage', syncHiddenTabs);
+      window.removeEventListener('nova-settings-updated', syncHiddenTabs);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (!isRouteVisible(location.pathname, hiddenTabs)) {
+      navigate('/', { replace: true });
+    }
+  }, [hiddenTabs, location.pathname, navigate]);
 
   const canNavigateNow = () => Date.now() - lastNavAtRef.current > 450;
 
@@ -70,6 +88,7 @@ const AnimatedRoutes = () => {
 
   const navigateBy = (direction) => {
     if (!canNavigateNow()) return;
+    if (currentIndex < 0) return;
     const nextIndex = currentIndex + direction;
     if (nextIndex < 0 || nextIndex >= routes.length) return;
     setSwipeDirection(direction);

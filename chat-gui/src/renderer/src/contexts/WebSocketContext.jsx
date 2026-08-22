@@ -45,6 +45,8 @@ export function WebSocketProvider({ children }) {
     const shouldReconnectRef = useRef(true);
     const connectRef = useRef(null);
     const connectChatRef = useRef(null);
+    const voiceConnectingRef = useRef(false);
+    const pendingVoiceCommandsRef = useRef([]);
     const stageResetTimerRef = useRef(null);
     const voiceStatusRef = useRef(voiceStatus);
     const voiceStageRef = useRef(voiceStage);
@@ -423,6 +425,11 @@ export function WebSocketProvider({ children }) {
 
     const connect = useCallback(async () => {
         if (!shouldReconnectRef.current) return;
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+            setConnStatus('connected');
+            return;
+        }
+        if (voiceConnectingRef.current) return;
         if (reconnectTimer.current) {
             clearTimeout(reconnectTimer.current);
             reconnectTimer.current = null;
@@ -433,23 +440,42 @@ export function WebSocketProvider({ children }) {
         }
 
         setConnStatus('connecting');
+        voiceConnectingRef.current = true;
         let url;
         try {
             url = await authorizedWebSocketUrl(WS_URL);
         } catch (error) {
             console.error('[voice] websocket authorization failed', error);
+            voiceConnectingRef.current = false;
             setConnStatus('disconnected');
+            if (shouldReconnectRef.current && readVoiceReconnectEnabled()) {
+                reconnectTimer.current = setTimeout(() => {
+                    connectRef.current?.();
+                }, 3000);
+            }
             return;
         }
-        if (!shouldReconnectRef.current) return;
+        if (!shouldReconnectRef.current) {
+            voiceConnectingRef.current = false;
+            return;
+        }
         const ws = new WebSocket(url);
         wsRef.current = ws;
         console.info('[voice] websocket connecting', WS_URL);
 
         ws.onopen = () => {
+            voiceConnectingRef.current = false;
             setConnStatus('connected');
             clearTimeout(reconnectTimer.current);
             console.info('[voice] websocket open');
+            const pendingCommands = pendingVoiceCommandsRef.current.splice(0);
+            pendingCommands.forEach(({ type, payload }) => {
+                try {
+                    ws.send(JSON.stringify({ type, ...payload }));
+                } catch (error) {
+                    console.warn('[voice] failed to flush queued command', type, error);
+                }
+            });
         };
 
         ws.onclose = (event) => {
@@ -457,6 +483,7 @@ export function WebSocketProvider({ children }) {
                 console.debug('[voice] ignoring stale websocket close event');
                 return;
             }
+            voiceConnectingRef.current = false;
             console.warn('[voice] websocket closed', { code: event.code, reason: event.reason, wasClean: event.wasClean });
             setConnStatus('disconnected');
             resetVoiceActivity();
@@ -475,6 +502,7 @@ export function WebSocketProvider({ children }) {
                 console.debug('[voice] ignoring stale websocket error event');
                 return;
             }
+            voiceConnectingRef.current = false;
             console.error('[voice] websocket error', event);
             resetVoiceActivity();
         };
@@ -577,6 +605,14 @@ export function WebSocketProvider({ children }) {
         } catch (error) {
             console.error('[chat] websocket authorization failed', error);
             setChatConnStatus('disconnected');
+            if (shouldReconnectRef.current) {
+                chatReconnectTimer.current = setTimeout(() => {
+                    chatReconnectTimer.current = null;
+                    if (shouldReconnectRef.current && currentConvIdRef.current === convId) {
+                        connectChatRef.current?.(convId);
+                    }
+                }, 2000);
+            }
             return;
         }
         if (!shouldReconnectRef.current) return;
@@ -675,7 +711,12 @@ export function WebSocketProvider({ children }) {
             console.debug('[voice] sendVoiceCommand', type, payload);
             wsRef.current.send(JSON.stringify({ type, ...payload }));
         } else {
-            console.warn("Voice WS not connected, cannot send", type);
+            console.warn('[voice] socket unavailable, queueing command and reconnecting', type);
+            pendingVoiceCommandsRef.current = [
+                ...pendingVoiceCommandsRef.current.slice(-4),
+                { type, payload },
+            ];
+            connectRef.current?.();
         }
     }, []);
 

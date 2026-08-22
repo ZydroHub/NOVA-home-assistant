@@ -27,9 +27,10 @@ export async function resolveControlToken(forceRefresh = false) {
 
 export async function authorizedWebSocketUrl(url) {
     const token = await resolveControlToken();
-    if (!token) throw new Error('Local GUI authorization is unavailable.');
     const authorizedUrl = new URL(url);
-    authorizedUrl.searchParams.set('token', token);
+    if (token) {
+        authorizedUrl.searchParams.set('token', token);
+    }
     return authorizedUrl.toString();
 }
 

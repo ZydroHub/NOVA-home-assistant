@@ -4,6 +4,8 @@ import {
     Activity,
     Bell,
     Check,
+    Eye,
+    EyeOff,
     Keyboard,
     Languages,
     Loader2,
@@ -17,9 +19,11 @@ import {
 import { apiFetch } from '../apiClient.js';
 import { useKeyboardSettings } from '../contexts/KeyboardContext.jsx';
 import { pageEntrance, panelEntrance, tactile } from '../motionPresets.js';
+import { NAV_ITEMS, readHiddenTabs, writeHiddenTabs } from '../navigationSettings.js';
 
 const KEY_SCANLINES_ENABLED = 'nova.scanlinesEnabled';
 const KEY_STATUS_BAR_ENABLED = 'nova.statusBarEnabled';
+const CONFIGURABLE_NAV_ITEMS = NAV_ITEMS.filter((item) => !item.required);
 const VOICE_LANGUAGE_OPTIONS = [
     { value: 'en', title: 'English', subtitle: 'Voice commands in English' },
     { value: 'sv', title: 'Swedish', subtitle: 'Voice commands in Swedish' },
@@ -103,6 +107,7 @@ export default function Settings() {
     const { keyboardEnabled, setKeyboardEnabled } = useKeyboardSettings();
     const [scanlinesEnabled, setScanlinesEnabled] = React.useState(() => readStoredBool(KEY_SCANLINES_ENABLED, true));
     const [statusBarEnabled, setStatusBarEnabled] = React.useState(() => readStoredBool(KEY_STATUS_BAR_ENABLED, true));
+    const [hiddenTabs, setHiddenTabs] = React.useState(readHiddenTabs);
     const [audioSource, setAudioSource] = React.useState('spotify');
     const [audioSourceLoading, setAudioSourceLoading] = React.useState(true);
     const [audioSourceState, setAudioSourceState] = React.useState('idle');
@@ -160,6 +165,16 @@ export default function Settings() {
         localStorage.setItem(KEY_STATUS_BAR_ENABLED, String(statusBarEnabled));
         window.dispatchEvent(new CustomEvent('nova-settings-updated'));
     }, [statusBarEnabled]);
+
+    React.useEffect(() => {
+        const syncHiddenTabs = () => setHiddenTabs(readHiddenTabs());
+        window.addEventListener('storage', syncHiddenTabs);
+        window.addEventListener('nova-settings-updated', syncHiddenTabs);
+        return () => {
+            window.removeEventListener('storage', syncHiddenTabs);
+            window.removeEventListener('nova-settings-updated', syncHiddenTabs);
+        };
+    }, []);
 
     React.useEffect(() => {
         let cancelled = false;
@@ -349,6 +364,20 @@ export default function Settings() {
         }
     };
 
+    const handleTabVisibilityChange = (tabId, visible) => {
+        setHiddenTabs((currentHiddenTabs) => {
+            const hidden = new Set(currentHiddenTabs);
+            if (visible) {
+                hidden.delete(tabId);
+            } else {
+                hidden.add(tabId);
+            }
+            const nextHiddenTabs = Array.from(hidden);
+            writeHiddenTabs(nextHiddenTabs);
+            return nextHiddenTabs;
+        });
+    };
+
     const handleCloseApp = async () => {
         try {
             await apiFetch('/shutdown', { method: 'POST' });
@@ -509,6 +538,29 @@ export default function Settings() {
                                 <SettingRow icon={Activity} title="Status bar" subtitle="System statistics and clock strip">
                                     <ToggleSwitch checked={statusBarEnabled} onChange={setStatusBarEnabled} label="Status bar" />
                                 </SettingRow>
+                            </div>
+                        </Panel>
+
+                        <Panel title="Visible Tabs" eyebrow="Navigation" icon={Eye}>
+                            <div className="space-y-3">
+                                {CONFIGURABLE_NAV_ITEMS.map((item) => {
+                                    const visible = !hiddenTabs.includes(item.id);
+                                    const Icon = item.icon;
+                                    return (
+                                        <SettingRow
+                                            key={item.id}
+                                            icon={visible ? Icon : EyeOff}
+                                            title={item.label}
+                                            subtitle={visible ? 'Shown in side navigation and swipe flow' : 'Hidden from side navigation and swipe flow'}
+                                        >
+                                            <ToggleSwitch
+                                                checked={visible}
+                                                onChange={(nextVisible) => handleTabVisibilityChange(item.id, nextVisible)}
+                                                label={`${item.label} tab`}
+                                            />
+                                        </SettingRow>
+                                    );
+                                })}
                             </div>
                         </Panel>
 

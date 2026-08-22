@@ -232,7 +232,8 @@ def require_local_control_token_request(request: Request) -> None:
 async def authorize_control_websocket(websocket: WebSocket) -> bool:
     """Reject unauthenticated WebSocket clients before accepting the socket."""
     token = websocket.query_params.get("token")
-    if is_valid_control_token(token):
+    client_host = websocket.client.host if websocket.client else None
+    if is_valid_control_token(token) or (not token and _is_local_client(client_host)):
         return True
     await websocket.close(code=1008, reason="Missing or invalid local GUI authorization")
     return False

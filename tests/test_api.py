@@ -134,35 +134,47 @@ def test_local_control_requests_work_without_bootstrap_token():
     assert resp.status_code == 200
 
 
-def test_websocket_endpoints_require_the_runtime_token():
-    """Stats, chat, and voice sockets reject anonymous clients before accepting them."""
+def test_websocket_endpoints_allow_local_bootstrap_fallback_and_reject_remote_clients():
+    """Local kiosk sockets keep working if token bootstrap fails; remote sockets still need auth."""
     from fastapi.testclient import TestClient
     from app import NOVA_INTERNAL_CONTROL_TOKEN, app
 
-    client = TestClient(app)
-    conversation = client.post("/conversations", headers=auth_headers()).json()
+    local_client = TestClient(app, client=("127.0.0.1", 50000))
+    remote_client = TestClient(app, client=("192.168.1.50", 50000))
+    conversation = local_client.post("/conversations").json()
 
-    with pytest.raises(WebSocketDisconnect) as rejected:
-        with client.websocket_connect("/ws/system-stats"):
+    with pytest.raises(WebSocketDisconnect) as rejected_remote:
+        with remote_client.websocket_connect("/ws/system-stats"):
             pass
-    assert rejected.value.code == 1008
+    assert rejected_remote.value.code == 1008
 
-    with client.websocket_connect(f"/ws/system-stats?token={NOVA_INTERNAL_CONTROL_TOKEN}") as websocket:
+    with local_client.websocket_connect("/ws/system-stats") as websocket:
         payload = websocket.receive_json()
     assert "cpu_percent" in payload
 
-    with client.websocket_connect(
+    with local_client.websocket_connect(f"/ws/system-stats?token={NOVA_INTERNAL_CONTROL_TOKEN}") as websocket:
+        payload = websocket.receive_json()
+    assert "cpu_percent" in payload
+
+    with local_client.websocket_connect(f"/ws/chat/{conversation['id']}") as websocket:
+        history = websocket.receive_json()
+    assert history["type"] == "history"
+
+    with local_client.websocket_connect(
         f"/ws/chat/{conversation['id']}?token={NOVA_INTERNAL_CONTROL_TOKEN}"
     ) as websocket:
         history = websocket.receive_json()
     assert history["type"] == "history"
 
-    with pytest.raises(WebSocketDisconnect) as rejected_voice:
-        with client.websocket_connect("/ws/voice"):
+    with pytest.raises(WebSocketDisconnect) as rejected_remote_voice:
+        with remote_client.websocket_connect("/ws/voice"):
             pass
-    assert rejected_voice.value.code == 1008
+    assert rejected_remote_voice.value.code == 1008
 
-    with client.websocket_connect(f"/ws/voice?token={NOVA_INTERNAL_CONTROL_TOKEN}"):
+    with local_client.websocket_connect("/ws/voice"):
+        pass
+
+    with local_client.websocket_connect(f"/ws/voice?token={NOVA_INTERNAL_CONTROL_TOKEN}"):
         pass
 
 

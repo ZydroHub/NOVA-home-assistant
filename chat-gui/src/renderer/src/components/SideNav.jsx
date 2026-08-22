@@ -1,25 +1,39 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { House, MessageCircle, Music2, Newspaper, CloudSun, SlidersHorizontal } from 'lucide-react';
 import { itemEntrance } from '../motionPresets.js';
-
-const items = [
-    { to: '/', label: 'Home', icon: House },
-    { to: '/chat', label: 'Chat', icon: MessageCircle },
-    { to: '/music', label: 'Music', icon: Music2 },
-    { to: '/news', label: 'News', icon: Newspaper },
-    { to: '/weather', label: 'Weather', icon: CloudSun },
-    { to: '/settings', label: 'Config', icon: SlidersHorizontal }
-];
+import { getVisibleNavItems, readHiddenTabs } from '../navigationSettings.js';
 
 export default function SideNav() {
+    const [hiddenTabs, setHiddenTabs] = React.useState(readHiddenTabs);
+
+    React.useEffect(() => {
+        const syncHiddenTabs = () => setHiddenTabs(readHiddenTabs());
+        window.addEventListener('storage', syncHiddenTabs);
+        window.addEventListener('nova-settings-updated', syncHiddenTabs);
+        return () => {
+            window.removeEventListener('storage', syncHiddenTabs);
+            window.removeEventListener('nova-settings-updated', syncHiddenTabs);
+        };
+    }, []);
+
+    const items = getVisibleNavItems(hiddenTabs);
+
     return (
         <motion.aside className="nova-side-nav" aria-label="NOVA navigation" initial="hidden" animate="visible">
             {items.map((item, index) => {
                 const Icon = item.icon;
                 return (
-                    <motion.div key={item.to} custom={index} variants={itemEntrance} whileTap={{ scale: 0.95 }}>
+                    <motion.div
+                        key={item.id}
+                        layout
+                        custom={index}
+                        variants={itemEntrance}
+                        initial="hidden"
+                        animate="visible"
+                        exit="hidden"
+                        whileTap={{ scale: 0.95 }}
+                    >
                         <NavLink
                             to={item.to}
                             className={({ isActive }) => `nova-side-btn ${isActive ? 'active' : ''}`}
