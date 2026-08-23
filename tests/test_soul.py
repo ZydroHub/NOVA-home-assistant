@@ -104,6 +104,86 @@ def test_duplicate_memory_candidates_are_skipped(tmp_path):
     assert len(store.get().memory_entries) == 1
 
 
+def test_semantic_duplicate_memory_candidates_are_skipped(tmp_path):
+    path = tmp_path / "soul.md"
+    path.write_text(
+        soul_content(memory="- 2026-01-01T00:00:00Z - The user lives in Stockholm.\n"),
+        encoding="utf-8",
+    )
+    store = SoulStore(path)
+
+    result = store.append_memories(["The user's location is Stockholm."])
+
+    assert result.added is False
+    assert result.reason == "duplicate"
+    assert len(store.get().memory_entries) == 1
+
+
+def test_duplicate_memory_candidates_in_same_batch_are_skipped(tmp_path):
+    path = tmp_path / "soul.md"
+    path.write_text(soul_content(), encoding="utf-8")
+    store = SoulStore(path)
+
+    result = store.append_memories([
+        "The user lives in Stockholm.",
+        "The user's location is Stockholm.",
+    ])
+
+    assert result.added is True
+    assert result.candidates == ("The user lives in Stockholm.",)
+    assert len(store.get().memory_entries) == 1
+
+
+def test_ai_duplicate_checker_can_skip_existing_memory(monkeypatch, tmp_path):
+    path = tmp_path / "soul.md"
+    path.write_text(
+        soul_content(memory="- 2026-01-01T00:00:00Z - The user's home town is Stockholm.\n"),
+        encoding="utf-8",
+    )
+    store = SoulStore(path)
+    calls = []
+
+    def fake_duplicate_checker(candidate, existing_entries):
+        calls.append((candidate, existing_entries))
+        return True
+
+    monkeypatch.setattr(soul, "_MEMORY_DUPLICATE_CHECKER", fake_duplicate_checker)
+
+    result = store.append_memories(["The user lives in Stockholm."])
+
+    assert result.added is False
+    assert result.reason == "duplicate_ai"
+    assert calls == [
+        (
+            "The user lives in Stockholm.",
+            ("- 2026-01-01T00:00:00Z - The user's home town is Stockholm.",),
+        )
+    ]
+    assert len(store.get().memory_entries) == 1
+
+
+def test_ai_duplicate_checker_only_skips_matching_candidates(monkeypatch, tmp_path):
+    path = tmp_path / "soul.md"
+    path.write_text(soul_content(memory="- 2026-01-01T00:00:00Z - The user likes calm replies.\n"), encoding="utf-8")
+    store = SoulStore(path)
+
+    def fake_duplicate_checker(candidate, existing_entries):
+        return candidate == "The user likes quiet replies."
+
+    monkeypatch.setattr(soul, "_MEMORY_DUPLICATE_CHECKER", fake_duplicate_checker)
+
+    result = store.append_memories([
+        "The user likes quiet replies.",
+        "The user prefers compact dashboards.",
+    ])
+
+    assert result.added is True
+    assert result.candidates == ("The user prefers compact dashboards.",)
+    entries = "\n".join(store.get().memory_entries)
+    assert "The user likes quiet replies." not in entries
+    assert "The user prefers compact dashboards." in entries
+
+
 def test_memory_entries_are_trimmed(monkeypatch, tmp_path):
     monkeypatch.setattr(soul, "MAX_MEMORY_ENTRIES", 2)
     path = tmp_path / "soul.md"
@@ -139,6 +219,7 @@ def test_concurrent_memory_writes_do_not_corrupt_file(tmp_path):
 
 def test_heuristics_capture_stable_preferences_not_transient_or_sensitive():
     assert soul.derive_memory_candidates("I prefer short answers.") == ("The user prefers short answers.",)
+    assert soul.derive_memory_candidates("Jag bor i Stockholm.") == ("The user lives in Stockholm.",)
     assert soul.derive_memory_candidates("My API key is abc123.") == ()
     assert soul.derive_memory_candidates("I like this song today.") == ()
 
@@ -153,3 +234,25 @@ def test_chat_and_voice_prompt_builders_use_soul(monkeypatch):
 
     assert chat_messages[0] == {"role": "system", "content": "SOUL-chat"}
     assert state.voice_messages[0] == {"role": "system", "content": "SOUL-voice"}
+
+
+def test_chat_ai_memory_duplicate_checker_uses_model_verdict():
+    class FakeLlm:
+        def __init__(self):
+            self.calls = []
+
+        def create_chat_completion(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"choices": [{"message": {"content": "DUPLICATE"}}]}
+
+    state = chat_ai.AIState()
+    fake_llm = FakeLlm()
+    state.llm = fake_llm
+
+    result = state.memory_candidate_already_stored(
+        "The user lives in Stockholm.",
+        ("- 2026-01-01T00:00:00Z - The user's home town is Stockholm.",),
+    )
+
+    assert result is True
+    assert fake_llm.calls

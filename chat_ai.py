@@ -33,7 +33,7 @@ except ImportError as exc:
     ) from exc
 from pydantic import BaseModel
 from wake_word import DEFAULT_WAKE_COMMAND_MODE, DEFAULT_WAKE_PHRASES, WakeWordDetector
-from soul import build_soul_system_prompt, remember_from_interaction
+from soul import build_soul_system_prompt, register_memory_duplicate_checker, remember_from_interaction
 
 with silence_stderr_fd():
     from stt_whisper import STTEngine as WhisperEngine
@@ -485,6 +485,7 @@ class AIState:
         self._active_model_id: str | None = None
         self._model_switching = False
         self._model_error = ""
+        self._memory_duplicate_lock = threading.Lock()
         self.pending_voice_reply: Optional[str] = None
         self.voice_pipeline_active = False
         self._voice_state_lock = threading.Lock()
@@ -523,6 +524,44 @@ class AIState:
                 logger.debug("Soul memory skipped for %s interaction: %s", source, result.reason)
         except Exception as exc:
             logger.warning("Soul memory update failed for %s interaction: %s", source, exc)
+
+    def memory_candidate_already_stored(self, candidate: str, existing_entries: tuple[str, ...]) -> bool:
+        """Ask the active chat model whether a candidate is already represented in soul memory."""
+        candidate = str(candidate or "").strip()
+        entries = tuple(str(entry or "").strip() for entry in existing_entries if str(entry or "").strip())[-25:]
+        if not candidate or not entries or self.llm is None:
+            return False
+
+        prompt = (
+            "Decide if the candidate memory is already stored in the existing NOVA memories.\n"
+            "Treat same durable fact or preference with different wording as DUPLICATE.\n"
+            "Treat different, newer, or contradictory facts as NEW.\n"
+            "Answer exactly one word: DUPLICATE or NEW.\n\n"
+            f"Candidate:\n{candidate}\n\n"
+            "Existing memories:\n"
+            + "\n".join(f"- {entry}" for entry in entries)
+        )
+
+        try:
+            with self._memory_duplicate_lock:
+                result = self._current_llm().create_chat_completion(
+                    messages=[
+                        {"role": "system", "content": "You are a strict memory deduplication classifier."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=4,
+                    temperature=0.0,
+                    stop=["\n"],
+                )
+        except Exception as exc:
+            logger.debug("Soul AI duplicate check skipped: %s", exc)
+            return False
+
+        try:
+            verdict = str(result["choices"][0]["message"]["content"]).strip().upper()
+        except (KeyError, IndexError, TypeError):
+            return False
+        return verdict.startswith("DUPLICATE")
 
     def _load_chat_model(self, model_id: str) -> None:
         model = get_chat_model_spec(model_id)
@@ -1310,6 +1349,7 @@ class AIState:
 # --- Router Initialization ---
 router = APIRouter()
 ai = AIState()
+register_memory_duplicate_checker(ai.memory_candidate_already_stored)
 
 
 def require_control_auth(

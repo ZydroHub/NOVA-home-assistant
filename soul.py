@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from config import PROJECT_ROOT
 
@@ -52,6 +52,9 @@ NOVA is a local-first home assistant for a personal dashboard. NOVA should feel 
 MAX_MEMORY_ENTRIES = max(1, int(os.getenv("NOVA_SOUL_MAX_MEMORY_ENTRIES", "80")))
 MAX_MEMORY_CHARS = max(1000, int(os.getenv("NOVA_SOUL_MAX_MEMORY_CHARS", "12000")))
 MAX_CANDIDATE_CHARS = 180
+MemoryDuplicateChecker = Callable[[str, tuple[str, ...]], bool]
+_MEMORY_DUPLICATE_CHECKER: MemoryDuplicateChecker | None = None
+_MEMORY_DUPLICATE_CHECKER_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,27 @@ class MemoryWriteResult:
     added: bool
     reason: str
     candidates: tuple[str, ...] = ()
+
+
+def register_memory_duplicate_checker(checker: MemoryDuplicateChecker | None) -> None:
+    """Register an optional AI-backed duplicate checker owned by the chat runtime."""
+    global _MEMORY_DUPLICATE_CHECKER
+    with _MEMORY_DUPLICATE_CHECKER_LOCK:
+        _MEMORY_DUPLICATE_CHECKER = checker
+
+
+def _memory_duplicate_by_ai(candidate: str, existing_entries: Iterable[str]) -> bool:
+    entries = tuple(existing_entries)
+    if not candidate or not entries:
+        return False
+    with _MEMORY_DUPLICATE_CHECKER_LOCK:
+        checker = _MEMORY_DUPLICATE_CHECKER
+    if checker is None:
+        return False
+    try:
+        return bool(checker(candidate, entries))
+    except Exception:
+        return False
 
 
 def _split_soul(content: str) -> tuple[str, str]:
@@ -133,6 +157,30 @@ def _normalize_memory_text(value: str) -> str:
     value = re.sub(r"^\-\s+\d{4}-\d{2}-\d{2}T[^\s]+\s+-\s+", "", value.strip())
     value = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
     return re.sub(r"\s+", " ", value)
+
+
+def _memory_dedupe_keys(value: str) -> set[str]:
+    normalized = _normalize_memory_text(value)
+    if not normalized:
+        return set()
+
+    keys = {normalized}
+    fact_patterns = (
+        (r"^the user lives in (.+)$", "location"),
+        (r"^the user s location is (.+)$", "location"),
+        (r"^the user s city is (.+)$", "location"),
+        (r"^the user is from (.+)$", "location"),
+        (r"^the user s name is (.+)$", "name"),
+        (r"^the user wants to be called (.+)$", "name"),
+        (r"^the user prefers (.+)$", "prefers"),
+        (r"^the user likes (.+)$", "likes"),
+        (r"^the user dislikes (.+)$", "dislikes"),
+    )
+    for pattern, namespace in fact_patterns:
+        match = re.match(pattern, normalized)
+        if match:
+            keys.add(f"{namespace}:{match.group(1).strip()}")
+    return keys
 
 
 def _clean_candidate_fragment(value: str) -> str:
@@ -201,6 +249,9 @@ def derive_memory_candidates(user_text: str, assistant_text: str = "") -> tuple[
         (r"\bjag gillar ([^.!?]{1,120})", "The user likes {value}."),
         (r"\bi hate ([^.!?]{1,120})", "The user dislikes {value}."),
         (r"\bjag hatar ([^.!?]{1,120})", "The user dislikes {value}."),
+        (r"\bi live in ([^.!?]{1,100})", "The user lives in {value}."),
+        (r"\bjag bor i ([^.!?]{1,100})", "The user lives in {value}."),
+        (r"\bi am from ([^.!?]{1,100})", "The user lives in {value}."),
         (r"\bmy ([a-z0-9 _-]{2,40}) is ([^.!?]{1,100})", "The user's {key} is {value}."),
         (r"\balways ([^.!?]{1,120})", "The user wants NOVA to always {value}."),
         (r"\bnever ([^.!?]{1,120})", "The user wants NOVA to never {value}."),
@@ -324,13 +375,15 @@ class SoulStore:
 
         with self._lock:
             snapshot = self.get()
-            existing_keys = {_normalize_memory_text(entry) for entry in snapshot.memory_entries}
+            existing_keys: set[str] = set()
+            for entry in snapshot.memory_entries:
+                existing_keys.update(_memory_dedupe_keys(entry))
             additions = []
             for memory in clean_memories:
-                key = _normalize_memory_text(memory)
-                if key and key not in existing_keys:
+                keys = _memory_dedupe_keys(memory)
+                if keys and not keys.intersection(existing_keys):
                     additions.append(memory)
-                    existing_keys.add(key)
+                    existing_keys.update(keys)
 
             if not additions:
                 return MemoryWriteResult(False, "duplicate", clean_memories)
@@ -346,8 +399,30 @@ class SoulStore:
                 manual = snapshot.manual_section
                 entries = list(snapshot.memory_entries)
 
+            current_keys: set[str] = set()
+            for entry in entries:
+                current_keys.update(_memory_dedupe_keys(entry))
+            filtered_additions = []
+            for memory in additions:
+                keys = _memory_dedupe_keys(memory)
+                if keys and not keys.intersection(current_keys):
+                    filtered_additions.append(memory)
+                    current_keys.update(keys)
+
+            if not filtered_additions:
+                return MemoryWriteResult(False, "duplicate", tuple(additions))
+
+            ai_filtered_additions = [
+                memory
+                for memory in filtered_additions
+                if not _memory_duplicate_by_ai(memory, entries)
+            ]
+
+            if not ai_filtered_additions:
+                return MemoryWriteResult(False, "duplicate_ai", tuple(filtered_additions))
+
             timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            entries.extend(f"- {timestamp} - {memory}" for memory in additions)
+            entries.extend(f"- {timestamp} - {memory}" for memory in ai_filtered_additions)
             content = _render_soul_content(manual, entries)
 
             try:
@@ -359,9 +434,9 @@ class SoulStore:
                 self._snapshot = _snapshot_from_content(self.path, content, True, stat.st_mtime_ns)
                 self._error_signature = None
             except OSError as exc:
-                return MemoryWriteResult(False, f"write_error: {exc}", tuple(additions))
+                return MemoryWriteResult(False, f"write_error: {exc}", tuple(ai_filtered_additions))
 
-            return MemoryWriteResult(True, "added", tuple(additions))
+            return MemoryWriteResult(True, "added", tuple(ai_filtered_additions))
 
     def remember_from_interaction(self, user_text: str, assistant_text: str = "") -> MemoryWriteResult:
         candidates = derive_memory_candidates(user_text, assistant_text)
