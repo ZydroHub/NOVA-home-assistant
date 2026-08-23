@@ -75,6 +75,7 @@ LOCAL_DIR = os.getenv("LOCAL_DIR", str(PROJECT_ROOT / "models"))
 CHAT_REPO_ID = os.getenv("CHAT_REPO_ID", "Qwen/Qwen3-0.6B-GGUF")
 CHAT_FILENAME = os.getenv("CHAT_FILENAME", "Qwen3-0.6B-Q8_0.gguf")
 CHAT_MODEL_PATH = os.path.join(LOCAL_DIR, CHAT_FILENAME)
+MODEL_SETTINGS_FILE = os.getenv("MODEL_SETTINGS_FILE", str(PROJECT_ROOT / "model_settings.json"))
 
 # Tool LLM (Function Gemma)
 TOOL_REPO_ID = os.getenv("TOOL_REPO_ID", "nlouis/functiongemma-pocket-q4_k_m")

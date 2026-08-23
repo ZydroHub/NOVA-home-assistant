@@ -238,6 +238,31 @@ def test_voice_settings_api_get_and_post():
     assert resp.status_code == 400
 
 
+def test_model_settings_api_get_and_rejects_invalid_or_remote_changes():
+    """Model selection is readable locally but state changes remain protected."""
+    from fastapi.testclient import TestClient
+    from app import app
+
+    client = TestClient(app)
+    response = client.get("/settings/models")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["selected_model"] == "qwen3-0.6b"
+    assert {item["id"] for item in data["options"]} == {
+        "qwen3-0.6b",
+        "llama3.2-1b",
+        "qwen2.5-1.5b",
+        "llama3.2-3b",
+    }
+
+    invalid = client.post("/settings/models", json={"model": "not-a-model"}, headers=auth_headers())
+    assert invalid.status_code == 400
+
+    remote_client = TestClient(app, client=("192.168.1.50", 50000))
+    rejected = remote_client.post("/settings/models", json={"model": "llama3.2-1b"})
+    assert rejected.status_code == 401
+
+
 def test_spotify_device_selection_prefers_requested_device():
     """Spotify controls should target the dashboard-selected device when provided."""
     from fastapi import HTTPException

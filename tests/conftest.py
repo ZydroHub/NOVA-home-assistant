@@ -28,6 +28,11 @@ _temp_alert_settings_file.write('{"alerts": {"nacka": true, "stockholm": true}, 
 _temp_alert_settings_file.close()
 os.environ["ALERT_SETTINGS_FILE"] = _temp_alert_settings_file.name
 
+_temp_model_settings_file = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+_temp_model_settings_file.write("{}")
+_temp_model_settings_file.close()
+os.environ["MODEL_SETTINGS_FILE"] = _temp_model_settings_file.name
+
 
 @pytest.fixture
 def temp_storage_path():

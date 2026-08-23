@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import {
     Activity,
     Bell,
+    Brain,
     Check,
     Eye,
     EyeOff,
@@ -112,6 +113,13 @@ export default function Settings() {
     const [voiceSettingsLoading, setVoiceSettingsLoading] = React.useState(true);
     const [voiceSettingsPending, setVoiceSettingsPending] = React.useState('');
     const [voiceSettingsError, setVoiceSettingsError] = React.useState('');
+    const [modelOptions, setModelOptions] = React.useState([]);
+    const [selectedModel, setSelectedModel] = React.useState('');
+    const [activeModel, setActiveModel] = React.useState('');
+    const [modelSettingsLoading, setModelSettingsLoading] = React.useState(true);
+    const [modelSettingsPending, setModelSettingsPending] = React.useState(false);
+    const [modelSwitching, setModelSwitching] = React.useState(false);
+    const [modelSettingsError, setModelSettingsError] = React.useState('');
     const [telegramTestState, setTelegramTestState] = React.useState('idle');
     const [telegramTestError, setTelegramTestError] = React.useState('');
     const [telegramStartupNotifications, setTelegramStartupNotifications] = React.useState(true);
@@ -206,6 +214,38 @@ export default function Settings() {
     React.useEffect(() => {
         let cancelled = false;
 
+        const loadModelSettings = async () => {
+            try {
+                const result = await apiFetch('/settings/models');
+                if (!cancelled) {
+                    setModelOptions(Array.isArray(result?.options) ? result.options : []);
+                    setSelectedModel(typeof result?.selected_model === 'string' ? result.selected_model : '');
+                    setActiveModel(typeof result?.active_model === 'string' ? result.active_model : '');
+                    setModelSwitching(Boolean(result?.switching));
+                    setModelSettingsError(result?.error || '');
+                }
+            } catch (error) {
+                if (!cancelled) {
+                    setModelSettingsError(error?.message || 'Failed to load chat model settings.');
+                }
+            } finally {
+                if (!cancelled) {
+                    setModelSettingsLoading(false);
+                }
+            }
+        };
+
+        loadModelSettings();
+        const pollId = window.setInterval(loadModelSettings, 1500);
+        return () => {
+            cancelled = true;
+            window.clearInterval(pollId);
+        };
+    }, []);
+
+    React.useEffect(() => {
+        let cancelled = false;
+
         const loadVoiceSettings = async () => {
             try {
                 const result = await apiFetch('/settings/voice');
@@ -269,6 +309,29 @@ export default function Settings() {
             setVoiceSettingsError(error?.message || 'Failed to update always listening.');
         } finally {
             setVoiceSettingsPending('');
+        }
+    };
+
+    const handleModelChange = async (modelId) => {
+        if (!modelId || modelSettingsLoading || modelSettingsPending || modelSwitching || modelId === activeModel) return;
+
+        setModelSettingsPending(true);
+        setModelSettingsError('');
+        try {
+            const result = await apiFetch('/settings/models', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: modelId }),
+            });
+            setModelOptions(Array.isArray(result?.options) ? result.options : []);
+            setSelectedModel(typeof result?.selected_model === 'string' ? result.selected_model : modelId);
+            setActiveModel(typeof result?.active_model === 'string' ? result.active_model : '');
+            setModelSwitching(Boolean(result?.switching));
+            setModelSettingsError(result?.error || '');
+        } catch (error) {
+            setModelSettingsError(error?.message || 'Failed to switch chat model.');
+        } finally {
+            setModelSettingsPending(false);
         }
     };
 
@@ -441,6 +504,41 @@ export default function Settings() {
                             ) : null}
                         </Panel>
 
+                        <Panel title="Chat Model" icon={Brain}>
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                {modelOptions.map((model) => {
+                                    const active = model.id === activeModel;
+                                    const selected = model.id === selectedModel;
+                                    const busy = modelSwitching && selected;
+                                    return (
+                                        <button
+                                            key={model.id}
+                                            type="button"
+                                            onClick={() => handleModelChange(model.id)}
+                                            disabled={modelSettingsLoading || modelSettingsPending || modelSwitching || active}
+                                            className={`min-h-[116px] rounded-[24px] border p-4 text-left transition-all duration-200 hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 ${
+                                                active
+                                                    ? 'border-cyan-200/70 bg-cyan-300/[0.13] shadow-[0_0_32px_rgba(34,211,238,0.16)]'
+                                                    : 'border-white/10 bg-white/[0.035] hover:border-cyan-100/[0.28] hover:bg-white/[0.055]'
+                                            }`}
+                                        >
+                                            <div className="flex items-center justify-between gap-3">
+                                                <span className="font-['Plus_Jakarta_Sans'] text-base font-bold text-cyan-50">{model.label}</span>
+                                                {busy ? <Loader2 size={17} className="animate-spin text-cyan-100" /> : active ? <Check size={17} className="text-cyan-100" /> : null}
+                                            </div>
+                                            <div className="mt-2 text-sm text-cyan-100/50">{model.description}</div>
+                                            <div className="mt-2 text-xs text-cyan-100/35">{model.size_note}</div>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                            {modelSettingsError ? (
+                                <div className="mt-4 rounded-2xl border border-rose-300/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+                                    {modelSettingsError}
+                                </div>
+                            ) : null}
+                        </Panel>
+
                         <Panel title="Interface Systems" icon={Activity}>
                             <div className="space-y-3">
                                 <SettingRow icon={Keyboard} title="Popup keyboard" description="Touch-friendly overlay input">
@@ -537,7 +635,7 @@ export default function Settings() {
                         <Panel title="Power Control" icon={Power} accent="rose">
                             <div className="rounded-[22px] border border-rose-200/[0.14] bg-rose-500/[0.08] p-4">
                                 <div className="font-['Plus_Jakarta_Sans'] text-base font-bold text-rose-50">Shutdown NOVA</div>
-                                <p className="mt-1 text-sm leading-relaxed text-rose-100/[0.55]">Close the local GUI session and notify the backend.</p>
+                                <p className="mt-1 text-sm leading-relaxed text-rose-100/[0.55]">Turn NOVA off.</p>
                                 <button
                                     type="button"
                                     onClick={handleCloseApp}

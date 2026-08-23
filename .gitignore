@@ -42,6 +42,8 @@ task_jobs.json
 telegram_seen_alerts.json
 telegram_subscriptions.json
 alert_settings.json
+model_settings.json
+model_settings.json.tmp
 training
 *.gguf
 whisper-tiny/

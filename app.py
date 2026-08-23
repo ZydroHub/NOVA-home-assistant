@@ -43,6 +43,7 @@ from config import (
     setup_logging,
 )
 from news_alerts import fetch_swedish_alerts
+from model_settings import get_chat_model_options, get_chat_model_settings_store, get_chat_model_spec
 from soul import get_soul_status
 from telegram_bot import get_telegram_bot, start_telegram_bot, stop_telegram_bot
 from quiet_io import silence_stderr_fd
@@ -767,6 +768,19 @@ def _voice_settings_response() -> dict[str, object]:
     }
 
 
+def _model_settings_response() -> dict[str, object]:
+    selected_model = get_chat_model_settings_store().get_selected_model()
+    runtime = ai_state.get_model_runtime_status()
+    return {
+        "status": "ok",
+        "selected_model": selected_model,
+        "active_model": runtime["active_model"],
+        "switching": runtime["switching"],
+        "error": runtime["error"],
+        "options": get_chat_model_options(),
+    }
+
+
 @app.get("/settings/alerts")
 async def get_alert_settings():
     """Return shared ON/OFF settings for alert regions."""
@@ -842,6 +856,37 @@ async def update_voice_settings(request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return _voice_settings_response()
+
+
+@app.get("/settings/models")
+async def get_model_settings():
+    """Return selectable chat models and their current runtime status."""
+    return _model_settings_response()
+
+
+@app.post("/settings/models", dependencies=CONTROL_AUTH)
+async def update_model_settings(request: Request):
+    """Persist a chat-model choice and start replacing the active model."""
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON.")
+
+    if not isinstance(payload, dict) or set(payload) != {"model"} or not isinstance(payload.get("model"), str):
+        raise HTTPException(status_code=400, detail="Request body must contain only a string 'model' value.")
+
+    model_id = payload["model"].strip()
+    try:
+        get_chat_model_spec(model_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        ai_state.request_model_switch(model_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    get_chat_model_settings_store().set_selected_model(model_id)
+    return _model_settings_response()
 
 
 @app.get("/system/stats")

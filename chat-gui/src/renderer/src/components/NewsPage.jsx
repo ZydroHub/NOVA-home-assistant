@@ -291,14 +291,6 @@ export default function NewsPage() {
                         </motion.button>
                     </div>
 
-                    <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-cyan-200/80">
-                        <motion.span
-                            className="inline-block h-1.5 w-1.5 rounded-full bg-cyan-200"
-                            animate={{ opacity: refreshing ? [0.35, 1, 0.35] : [0.9, 0.9, 0.9], scale: refreshing ? [1, 1.35, 1] : [1, 1, 1] }}
-                            transition={{ duration: 0.8, repeat: Infinity, ease: 'easeInOut' }}
-                        />
-                        Auto refresh every 15 minutes
-                    </div>
                 </div>
                 <AnimatePresence>
                     {refreshing && (

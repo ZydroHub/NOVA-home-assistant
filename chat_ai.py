@@ -331,12 +331,9 @@ atexit.register(_TOOL_WORKER.stop)
 # --- Model Configuration (from config) ---
 from config import (
     CONVERSATIONS_FILE,
-    LOCAL_DIR,
-    CHAT_REPO_ID as REPO_ID,
-    CHAT_FILENAME as FILENAME,
-    CHAT_MODEL_PATH as MODEL_PATH,
     is_valid_control_token,
 )
+from model_settings import DEFAULT_CHAT_MODEL_ID, get_chat_model_settings_store, get_chat_model_spec
 
 
 def strip_think_for_ui(text: str) -> str:
@@ -483,7 +480,11 @@ class AIState:
         self.is_recording = False
         self.is_vosk_recording = False
         self._load_lock = threading.Lock()
+        self._model_state_lock = threading.Lock()
         self._models_loaded = False
+        self._active_model_id: str | None = None
+        self._model_switching = False
+        self._model_error = ""
         self.pending_voice_reply: Optional[str] = None
         self.voice_pipeline_active = False
         self._voice_state_lock = threading.Lock()
@@ -523,31 +524,106 @@ class AIState:
         except Exception as exc:
             logger.warning("Soul memory update failed for %s interaction: %s", source, exc)
 
+    def _load_chat_model(self, model_id: str) -> None:
+        model = get_chat_model_spec(model_id)
+        if not model.path.exists():
+            logger.info("Downloading chat model %s...", model.label)
+            model.path.parent.mkdir(parents=True, exist_ok=True)
+            hf_hub_download(repo_id=model.repo_id, filename=model.filename, local_dir=str(model.path.parent))
+
+        logger.info("Loading chat model %s...", model.label)
+        replacement_llm = Llama(
+            model_path=str(model.path),
+            n_ctx=4096,
+            n_threads=NOVA_LLM_THREADS,
+            verbose=False,
+        )
+        with self._model_state_lock:
+            self.llm = replacement_llm
+            self._active_model_id = model.id
+
+    def _load_speech_models(self) -> None:
+        if getattr(self.stt, "model", None) is None:
+            with silence_stderr_fd():
+                self.stt.load_model()
+
+        if getattr(self.vosk, "model", None) is None:
+            with silence_stderr_fd():
+                self.vosk.load_model()
+
     def load_model(self):
         with self._load_lock:
-            if self._models_loaded and self.llm is not None:
+            selected_model = get_chat_model_settings_store().get_selected_model()
+            if self._models_loaded and self.llm is not None and self._active_model_id == selected_model:
                 logger.info("Chat AI already loaded; skipping model initialization.")
                 return
 
-            if not os.path.exists(MODEL_PATH):
-                logger.info("Downloading model...")
-                os.makedirs(LOCAL_DIR, exist_ok=True)
-                hf_hub_download(repo_id=REPO_ID, filename=FILENAME, local_dir=LOCAL_DIR)
+            startup_model = selected_model
+            selected_spec = get_chat_model_spec(selected_model)
+            fallback_spec = get_chat_model_spec(DEFAULT_CHAT_MODEL_ID)
+            if selected_model != DEFAULT_CHAT_MODEL_ID and not selected_spec.path.exists() and fallback_spec.path.exists():
+                startup_model = DEFAULT_CHAT_MODEL_ID
+                logger.info(
+                    "Selected chat model %s is downloading; starting with %s until it is ready.",
+                    selected_model,
+                    fallback_spec.label,
+                )
 
-            if self.llm is None:
-                logger.info("Loading LLM...")
-                self.llm = Llama(model_path=MODEL_PATH, n_ctx=4096, n_threads=NOVA_LLM_THREADS, verbose=False)
-
-            if getattr(self.stt, "model", None) is None:
-                with silence_stderr_fd():
-                    self.stt.load_model()
-
-            if getattr(self.vosk, "model", None) is None:
-                with silence_stderr_fd():
-                    self.vosk.load_model()
-
-            self._models_loaded = True
+            self._load_chat_model(startup_model)
+            self._load_speech_models()
+            with self._model_state_lock:
+                self._models_loaded = True
             logger.info("Chat AI Ready.")
+
+            if startup_model != selected_model:
+                self.request_model_switch(selected_model)
+
+    def get_model_runtime_status(self) -> dict[str, object]:
+        with self._model_state_lock:
+            return {
+                "active_model": self._active_model_id,
+                "switching": self._model_switching,
+                "error": self._model_error or None,
+            }
+
+    def request_model_switch(self, model_id: str) -> bool:
+        """Start a non-blocking chat-model replacement. Returns True when loading starts."""
+        get_chat_model_spec(model_id)
+        with self._model_state_lock:
+            if self._model_switching:
+                raise RuntimeError("A chat model switch is already in progress.")
+            if self.llm is not None and self._active_model_id == model_id:
+                self._model_error = ""
+                return False
+            self._model_switching = True
+            self._model_error = ""
+
+        threading.Thread(
+            target=self._switch_chat_model_worker,
+            args=(model_id,),
+            daemon=True,
+            name="nova-chat-model-switch",
+        ).start()
+        return True
+
+    def _switch_chat_model_worker(self, model_id: str) -> None:
+        try:
+            with self._load_lock:
+                self._load_chat_model(model_id)
+            logger.info("Chat model switched to %s.", model_id)
+        except Exception as exc:
+            logger.exception("Chat model switch to %s failed", model_id)
+            with self._model_state_lock:
+                self._model_error = f"Could not load {model_id}: {exc}"
+        finally:
+            with self._model_state_lock:
+                self._model_switching = False
+
+    def _current_llm(self):
+        with self._model_state_lock:
+            if self.llm is None:
+                raise RuntimeError("Chat model is not loaded yet.")
+            return self.llm
 
     def shutdown(self) -> None:
         """Best-effort cleanup for model-adjacent workers and audio devices."""
@@ -865,7 +941,8 @@ class AIState:
         llm_messages = self._build_llm_messages(messages, mode="chat")
 
         loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, lambda: self.llm.create_chat_completion(
+        llm = self._current_llm()
+        response = await loop.run_in_executor(None, lambda: llm.create_chat_completion(
             messages=llm_messages,
             max_tokens=max_tokens,
             temperature=0.7,
@@ -913,7 +990,8 @@ class AIState:
 
         def produce_chunks():
             try:
-                stream = self.llm.create_chat_completion(
+                llm = self._current_llm()
+                stream = llm.create_chat_completion(
                     messages=llm_messages,
                     max_tokens=max_tokens,
                     temperature=0.7,
