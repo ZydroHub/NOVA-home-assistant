@@ -48,6 +48,40 @@
     }
   },
   {
+    "name": "pause_music",
+    "description": "Pauses Spotify music without resuming music that is already paused.",
+    "parameters": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "lower_music_volume",
+    "description": "Lowers the current Spotify device volume by a percentage step.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "percent": {
+          "type": "integer",
+          "description": "How many percentage points to lower the volume by, e.g. 20. Defaults to 10."
+        }
+      }
+    }
+  },
+  {
+    "name": "raise_music_volume",
+    "description": "Raises the current Spotify device volume by a percentage step.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "percent": {
+          "type": "integer",
+          "description": "How many percentage points to raise the volume by, e.g. 10. Defaults to 10."
+        }
+      }
+    }
+  },
+  {
     "name": "get_current_music",
     "description": "Reports the Spotify song and artist currently playing, or says that no music is playing.",
     "parameters": {

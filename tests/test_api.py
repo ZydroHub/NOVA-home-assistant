@@ -338,6 +338,90 @@ def test_spotify_play_resumes_paused_music_without_toggling(monkeypatch):
     assert fake.start_calls == ["speaker"]
 
 
+def test_spotify_pause_stops_playing_music_without_toggling(monkeypatch):
+    from fastapi.testclient import TestClient
+    import app as app_module
+
+    class FakeSpotify:
+        def __init__(self):
+            self.is_playing = True
+            self.pause_calls = []
+
+        def devices(self):
+            return {"devices": [{"id": "speaker", "name": "NOVA", "is_active": True}]}
+
+        def current_playback(self):
+            return {
+                "is_playing": self.is_playing,
+                "item": {
+                    "name": "Midnight City",
+                    "artists": [{"name": "M83"}],
+                    "album": {"images": []},
+                    "duration_ms": 240000,
+                },
+            }
+
+        def pause_playback(self, device_id=None):
+            self.pause_calls.append(device_id)
+            self.is_playing = False
+
+    fake = FakeSpotify()
+    monkeypatch.setattr(app_module, "_spotify_client", lambda: fake)
+    client = TestClient(app_module.app)
+
+    response = client.post("/nova/spotify/pause", headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "Midnight City"
+    assert response.json()["artist"] == "M83"
+    assert response.json()["is_playing"] is False
+    assert fake.pause_calls == ["speaker"]
+
+    response = client.post("/nova/spotify/pause", headers=auth_headers())
+
+    assert response.status_code == 200
+    assert fake.pause_calls == ["speaker"]
+
+
+def test_spotify_volume_can_lower_selected_device(monkeypatch):
+    from fastapi.testclient import TestClient
+    import app as app_module
+
+    class FakeSpotify:
+        def __init__(self):
+            self.volume_percent = 68
+            self.volume_calls = []
+
+        def devices(self):
+            return {
+                "devices": [
+                    {
+                        "id": "speaker",
+                        "name": "NOVA",
+                        "is_active": True,
+                        "volume_percent": self.volume_percent,
+                    }
+                ]
+            }
+
+        def current_playback(self):
+            return {"is_playing": True, "item": {"name": "", "artists": [], "album": {"images": []}}}
+
+        def volume(self, volume_percent, device_id=None):
+            self.volume_calls.append((volume_percent, device_id))
+            self.volume_percent = volume_percent
+
+    fake = FakeSpotify()
+    monkeypatch.setattr(app_module, "_spotify_client", lambda: fake)
+    client = TestClient(app_module.app)
+
+    response = client.post("/nova/spotify/volume?delta=-10", headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["volume_percent"] == 58
+    assert fake.volume_calls == [(58, "speaker")]
+
+
 def test_spotify_duck_restores_original_volume(monkeypatch):
     """Spotify ducking stores the current volume and restores it after voice activity."""
     import app as app_module

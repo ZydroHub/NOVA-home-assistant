@@ -400,6 +400,59 @@ def run_play_music(arguments: dict) -> str:
     return "Spotify playback started."
 
 
+def run_pause_music(arguments: dict) -> str:
+    logger.info("[tool] pause_music()")
+    try:
+        result = _local_api_json("/nova/spotify/pause", method="POST")
+    except (OSError, RuntimeError, json.JSONDecodeError) as exc:
+        return f"I could not pause Spotify music: {exc}"
+
+    title = str(result.get("title") or "").strip()
+    artist = str(result.get("artist") or "").strip()
+    if title and artist:
+        return f"Paused {title} by {artist}."
+    if title:
+        return f"Paused {title}."
+    return "Spotify music paused."
+
+
+def run_lower_music_volume(arguments: dict) -> str:
+    logger.info("[tool] lower_music_volume()")
+    amount = _normalize_volume_delta_amount(arguments)
+    try:
+        result = _local_api_json(f"/nova/spotify/volume?delta=-{amount}", method="POST")
+    except (OSError, RuntimeError, json.JSONDecodeError) as exc:
+        return f"I could not lower Spotify volume: {exc}"
+
+    volume = result.get("volume_percent")
+    if isinstance(volume, int):
+        return f"Spotify volume lowered to {volume}%."
+    return "Spotify volume lowered."
+
+
+def run_raise_music_volume(arguments: dict) -> str:
+    logger.info("[tool] raise_music_volume()")
+    amount = _normalize_volume_delta_amount(arguments)
+    try:
+        result = _local_api_json(f"/nova/spotify/volume?delta={amount}", method="POST")
+    except (OSError, RuntimeError, json.JSONDecodeError) as exc:
+        return f"I could not raise Spotify volume: {exc}"
+
+    volume = result.get("volume_percent")
+    if isinstance(volume, int):
+        return f"Spotify volume raised to {volume}%."
+    return "Spotify volume raised."
+
+
+def _normalize_volume_delta_amount(arguments: dict) -> int:
+    raw_amount = arguments.get("percent") if isinstance(arguments, dict) else None
+    try:
+        amount = int(raw_amount)
+    except (TypeError, ValueError):
+        amount = 10
+    return max(1, min(100, abs(amount)))
+
+
 def run_get_current_music(arguments: dict) -> str:
     logger.info("[tool] get_current_music()")
     try:
@@ -431,13 +484,22 @@ TOOL_RUNNERS = {
     "web_search": run_web_search,
     "network_scan": run_network_scan,
     "play_music": run_play_music,
+    "pause_music": run_pause_music,
+    "lower_music_volume": run_lower_music_volume,
+    "raise_music_volume": run_raise_music_volume,
     "get_current_music": run_get_current_music,
 }
 
 
 def _match_builtin_command(prompt: str) -> str | None:
+    match = _match_builtin_command_with_args(prompt)
+    return match[0] if match else None
+
+
+def _match_builtin_command_with_args(prompt: str) -> tuple[str, dict] | None:
     normalized = unicodedata.normalize("NFKD", str(prompt or "").lower())
     normalized = normalized.encode("ascii", errors="ignore").decode("ascii")
+    normalized = re.sub(r"(?<!\w)\+\s*(\d{1,3})", r"plus \1", normalized)
     normalized = re.sub(r"[^a-z0-9 ]+", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()
 
@@ -457,7 +519,7 @@ def _match_builtin_command(prompt: str) -> str | None:
         "vilken musik spelar",
     )
     if any(phrase in normalized for phrase in current_music_phrases):
-        return "get_current_music"
+        return "get_current_music", {}
 
     play_music_phrases = (
         "play music",
@@ -473,8 +535,78 @@ def _match_builtin_command(prompt: str) -> str | None:
         "satt pa musik",
     )
     if any(phrase in normalized for phrase in play_music_phrases):
-        return "play_music"
+        return "play_music", {}
+
+    pause_music_phrases = (
+        "turn off the music",
+        "turn music off",
+        "stop the music",
+        "pause the music",
+        "pause music",
+        "stop music",
+        "turn off spotify",
+        "stang av musiken",
+        "pausa musiken",
+        "stoppa musiken",
+    )
+    if any(phrase in normalized for phrase in pause_music_phrases):
+        return "pause_music", {}
+
+    lower_volume_phrases = (
+        "lower the volume",
+        "turn down the volume",
+        "lower music volume",
+        "turn the music down",
+        "make the music quieter",
+        "sank volymen",
+        "sank musiken",
+        "sank med",
+        "lagre volym",
+        "skruva ner volymen",
+        "lower by",
+    )
+    if any(phrase in normalized for phrase in lower_volume_phrases):
+        return "lower_music_volume", {"percent": _extract_volume_delta_percent(normalized)}
+
+    raise_volume_phrases = (
+        "raise the volume",
+        "turn up the volume",
+        "increase the volume",
+        "raise music volume",
+        "turn the music up",
+        "make the music louder",
+        "hoj volymen",
+        "hoj musiken",
+        "hoj med",
+        "hogre volym",
+        "skruva upp volymen",
+        "raise by",
+        "increase by",
+        "plus",
+    )
+    if any(phrase in normalized for phrase in raise_volume_phrases) or _has_explicit_positive_volume_delta(normalized):
+        return "raise_music_volume", {"percent": _extract_volume_delta_percent(normalized)}
     return None
+
+
+def _extract_volume_delta_percent(normalized_prompt: str) -> int:
+    percent_patterns = (
+        r"\b(?:by|with|med)\s+(\d{1,3})\s*(?:percent|procent)?\b",
+        r"\b(\d{1,3})\s*(?:percent|procent)\b",
+        r"\b(\d{1,3})\s*$",
+    )
+    for pattern in percent_patterns:
+        match = re.search(pattern, normalized_prompt)
+        if match:
+            try:
+                return max(1, min(100, int(match.group(1))))
+            except (TypeError, ValueError):
+                break
+    return 10
+
+
+def _has_explicit_positive_volume_delta(normalized_prompt: str) -> bool:
+    return bool(re.search(r"(?:^|\s)(?:\+|plus)\s*\d{1,3}\s*(?:percent|procent)?\b", normalized_prompt))
 
 
 def run_tool(name: str, arguments: dict) -> str:
@@ -536,10 +668,15 @@ def run_task_for_backend(prompt: str) -> tuple:
     Returns (tool_call_raw_or_none, tool_result_or_none).
     If no tool call, returns (None, None).
     """
-    builtin_command = _match_builtin_command(prompt)
-    if builtin_command:
-        tool_call = f"<start_function_call>call:{builtin_command}{{}}<end_function_call>"
-        return tool_call, run_tool(builtin_command, {})
+    builtin_match = _match_builtin_command_with_args(prompt)
+    if builtin_match:
+        builtin_command, arguments = builtin_match
+        args_payload = "".join(
+            f"{key}:{value}"
+            for key, value in (arguments or {}).items()
+        )
+        tool_call = f"<start_function_call>call:{builtin_command}{{{args_payload}}}<end_function_call>"
+        return tool_call, run_tool(builtin_command, arguments)
 
     llm, chat_tools = _get_llm_and_tools()
     return run_task(llm, chat_tools, prompt)

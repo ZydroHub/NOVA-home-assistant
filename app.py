@@ -1551,6 +1551,76 @@ async def spotify_play(device_id: str | None = None):
         raise HTTPException(status_code=409, detail=str(exc))
 
 
+@app.post("/nova/spotify/pause", dependencies=CONTROL_AUTH)
+async def spotify_pause(device_id: str | None = None):
+    """Pause Spotify without resuming playback if it is already paused."""
+    try:
+        def pause_blocking():
+            client = _spotify_client()
+            chosen = _select_spotify_device(client.devices(), device_id)
+            chosen_id = chosen.get("id") if isinstance(chosen, dict) else None
+            playback = client.current_playback()
+            if playback and playback.get("is_playing"):
+                client.pause_playback(device_id=chosen_id)
+                playback = client.current_playback()
+            return chosen, playback
+
+        chosen_device, updated = await asyncio.to_thread(pause_blocking)
+        _invalidate_spotify_audio_state_cache()
+        return {
+            "status": "ok",
+            "device_id": chosen_device.get("id") if isinstance(chosen_device, dict) else None,
+            "device_name": chosen_device.get("name") if isinstance(chosen_device, dict) else None,
+            **_spotify_track_payload(updated),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Spotify pause failed: %s", exc)
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/nova/spotify/volume", dependencies=CONTROL_AUTH)
+async def spotify_volume(
+    volume_percent: int | None = None,
+    delta: int | None = None,
+    device_id: str | None = None,
+):
+    """Set Spotify volume, or adjust it by a delta from the selected device volume."""
+    if volume_percent is None and delta is None:
+        raise HTTPException(status_code=400, detail="Provide volume_percent or delta.")
+
+    try:
+        def volume_blocking():
+            client = _spotify_client()
+            chosen = _select_spotify_device(client.devices(), device_id)
+            chosen_id = chosen.get("id") if isinstance(chosen, dict) else None
+            current_volume = chosen.get("volume_percent") if isinstance(chosen, dict) else None
+            if volume_percent is None and current_volume is None:
+                raise HTTPException(status_code=409, detail="Spotify device volume is unavailable.")
+            target = _clamp_spotify_volume_percent(
+                volume_percent if volume_percent is not None else int(current_volume) + int(delta or 0),
+                50,
+            )
+            client.volume(target, device_id=chosen_id)
+            return chosen, target, client.current_playback()
+
+        chosen_device, target_volume, updated = await asyncio.to_thread(volume_blocking)
+        _invalidate_spotify_audio_state_cache()
+        return {
+            "status": "ok",
+            "device_id": chosen_device.get("id") if isinstance(chosen_device, dict) else None,
+            "device_name": chosen_device.get("name") if isinstance(chosen_device, dict) else None,
+            "volume_percent": target_volume,
+            **_spotify_track_payload(updated),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Spotify volume failed: %s", exc)
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
 @app.get("/nova/spotify/audio-state")
 async def spotify_audio_state():
     sampled_at = datetime.now()
