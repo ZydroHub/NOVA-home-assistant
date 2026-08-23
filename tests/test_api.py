@@ -133,6 +133,13 @@ def test_local_control_requests_work_without_bootstrap_token():
     resp = client.post("/settings/alerts", json={"alerts": {"stockholm": True}})
     assert resp.status_code == 200
 
+    stale_token = client.post(
+        "/settings/alerts",
+        json={"alerts": {"stockholm": True}},
+        headers={"X-NOVA-Token": "stale-token-after-restart"},
+    )
+    assert stale_token.status_code == 200
+
 
 def test_websocket_endpoints_allow_local_bootstrap_fallback_and_reject_remote_clients():
     """Local kiosk sockets keep working if token bootstrap fails; remote sockets still need auth."""
@@ -175,6 +182,9 @@ def test_websocket_endpoints_allow_local_bootstrap_fallback_and_reject_remote_cl
         pass
 
     with local_client.websocket_connect(f"/ws/voice?token={NOVA_INTERNAL_CONTROL_TOKEN}"):
+        pass
+
+    with local_client.websocket_connect("/ws/voice?token=stale-token-after-restart"):
         pass
 
 
@@ -364,3 +374,62 @@ def test_spotify_duck_restores_original_volume(monkeypatch):
     assert restored["active"] is False
     assert restored["restored"] is True
     assert fake.volume_calls == [(15, "speaker"), (68, "speaker")]
+
+
+def test_spotify_duck_skips_when_no_active_device(monkeypatch):
+    """Voice ducking stays quiet when Spotify has no active playback device."""
+    import app as app_module
+
+    class FakeSpotify:
+        def __init__(self):
+            self.volume_calls = []
+
+        def devices(self):
+            return {"devices": [{"id": "speaker", "name": "NOVA", "is_active": False, "volume_percent": 68}]}
+
+        def volume(self, volume_percent, device_id=None):
+            self.volume_calls.append((volume_percent, device_id))
+
+    fake = FakeSpotify()
+    monkeypatch.setattr(app_module, "_spotify_client", lambda: fake)
+    with app_module._SPOTIFY_DUCK_LOCK:
+        app_module._SPOTIFY_DUCK_STATE.update({"active": False, "device_id": None, "volume_percent": None})
+
+    result = app_module._spotify_duck_blocking(volume_percent=15)
+
+    assert result == {
+        "status": "skipped",
+        "active": False,
+        "reason": "no_active_device",
+        "device_id": None,
+        "device_name": None,
+    }
+    assert fake.volume_calls == []
+
+
+def test_spotify_duck_does_not_mark_state_active_when_player_disappears(monkeypatch):
+    """A Spotify race during ducking leaves no stale volume restore state."""
+    import app as app_module
+
+    class FakeSpotifyError(Exception):
+        http_status = 404
+
+        def __str__(self):
+            return "Player command failed: No active device found"
+
+    class FakeSpotify:
+        def devices(self):
+            return {"devices": [{"id": "speaker", "name": "NOVA", "is_active": True, "volume_percent": 68}]}
+
+        def volume(self, _volume_percent, device_id=None):
+            raise FakeSpotifyError()
+
+    monkeypatch.setattr(app_module, "_spotify_client", lambda: FakeSpotify())
+    with app_module._SPOTIFY_DUCK_LOCK:
+        app_module._SPOTIFY_DUCK_STATE.update({"active": False, "device_id": None, "volume_percent": None})
+
+    result = app_module._spotify_duck_blocking(volume_percent=15)
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "no_active_device"
+    assert app_module._SPOTIFY_DUCK_STATE == {"active": False, "device_id": None, "volume_percent": None}

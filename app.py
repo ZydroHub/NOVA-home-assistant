@@ -174,10 +174,10 @@ def require_control_auth(
             detail="Local GUI authorization is unavailable; control endpoints are disabled.",
         )
 
-    provided = (x_nova_token or "").strip() or _bearer_token(authorization)
     client_host = request.client.host if request.client else None
-    if not provided and _is_local_client(client_host):
+    if _is_local_client(client_host):
         return
+    provided = (x_nova_token or "").strip() or _bearer_token(authorization)
     if not provided:
         raise HTTPException(
             status_code=401,
@@ -234,7 +234,7 @@ async def authorize_control_websocket(websocket: WebSocket) -> bool:
     """Reject unauthenticated WebSocket clients before accepting the socket."""
     token = websocket.query_params.get("token")
     client_host = websocket.client.host if websocket.client else None
-    if is_valid_control_token(token) or (not token and _is_local_client(client_host)):
+    if _is_local_client(client_host) or is_valid_control_token(token):
         return True
     await websocket.close(code=1008, reason="Missing or invalid local GUI authorization")
     return False
@@ -430,6 +430,52 @@ def _select_spotify_device(devices_payload: object, requested_device_id: str | N
     return _pick_spotify_device(devices_payload)
 
 
+def _pick_active_spotify_device(devices_payload: object, requested_device_id: str | None = None) -> dict | None:
+    """Return a currently active player suitable for automatic voice ducking."""
+    devices = devices_payload.get("devices") if isinstance(devices_payload, dict) else None
+    if not isinstance(devices, list):
+        return None
+
+    requested_id = str(requested_device_id or "").strip()
+    active_devices = [
+        device
+        for device in devices
+        if isinstance(device, dict) and bool(device.get("is_active"))
+    ]
+    if requested_id:
+        return next(
+            (device for device in active_devices if str(device.get("id") or "") == requested_id),
+            None,
+        )
+
+    preferred_names = ("raspotify", "raspberrypi")
+    return next(
+        (
+            device
+            for device in active_devices
+            if any(preferred in str(device.get("name") or "").lower() for preferred in preferred_names)
+        ),
+        active_devices[0] if active_devices else None,
+    )
+
+
+def _spotify_duck_skipped(reason: str, *, device: dict | None = None) -> dict:
+    return {
+        "status": "skipped",
+        "active": False,
+        "reason": reason,
+        "device_id": device.get("id") if isinstance(device, dict) else None,
+        "device_name": device.get("name") if isinstance(device, dict) else None,
+    }
+
+
+def _is_no_active_spotify_device_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return getattr(exc, "http_status", None) == 404 and (
+        "no_active_device" in message or "no active device" in message
+    )
+
+
 def _clamp_spotify_volume_percent(value: object, default: int = 20) -> int:
     try:
         number = int(value)
@@ -449,31 +495,57 @@ def _spotify_duck_blocking(
     )
 
     client = _spotify_client()
-    devices_payload = client.devices()
-    chosen = _select_spotify_device(devices_payload, device_id)
-    chosen_id = chosen.get("id") if isinstance(chosen, dict) else None
-    chosen_name = chosen.get("name") if isinstance(chosen, dict) else None
 
     with _SPOTIFY_DUCK_LOCK:
         if restore:
             stored_device_id = _SPOTIFY_DUCK_STATE.get("device_id")
             stored_volume = _SPOTIFY_DUCK_STATE.get("volume_percent")
             was_active = bool(_SPOTIFY_DUCK_STATE.get("active"))
+            if not was_active or stored_volume is None:
+                _SPOTIFY_DUCK_STATE.update({"active": False, "device_id": None, "volume_percent": None})
+                return _spotify_duck_skipped("not_ducked")
+
+            try:
+                client.volume(_clamp_spotify_volume_percent(stored_volume), device_id=stored_device_id)
+            except Exception as exc:
+                if _is_no_active_spotify_device_error(exc):
+                    logger.info("Spotify duck restore skipped because no player is active")
+                    _SPOTIFY_DUCK_STATE.update({"active": False, "device_id": None, "volume_percent": None})
+                    return _spotify_duck_skipped("no_active_device")
+                raise
+
             _SPOTIFY_DUCK_STATE.update({"active": False, "device_id": None, "volume_percent": None})
-            if was_active and stored_volume is not None:
-                client.volume(_clamp_spotify_volume_percent(stored_volume), device_id=stored_device_id or chosen_id)
-                _invalidate_spotify_audio_state_cache()
+            _invalidate_spotify_audio_state_cache()
             return {
                 "status": "ok",
                 "active": False,
-                "device_id": stored_device_id or chosen_id,
-                "device_name": chosen_name,
+                "device_id": stored_device_id,
+                "device_name": None,
                 "volume_percent": stored_volume,
-                "restored": was_active and stored_volume is not None,
+                "restored": True,
             }
 
+        devices_payload = client.devices()
+        chosen = _pick_active_spotify_device(devices_payload, device_id)
+        if chosen is None:
+            logger.info("Spotify duck skipped because no player is active")
+            return _spotify_duck_skipped("no_active_device")
+
+        if chosen.get("supports_volume") is False or chosen.get("volume_percent") is None:
+            logger.info("Spotify duck skipped because %s does not expose a restorable volume", chosen.get("name"))
+            return _spotify_duck_skipped("volume_unavailable", device=chosen)
+
+        chosen_id = str(chosen.get("id") or "") or None
+        current_volume = _clamp_spotify_volume_percent(chosen.get("volume_percent"), 0)
+        try:
+            client.volume(target_volume, device_id=chosen_id)
+        except Exception as exc:
+            if _is_no_active_spotify_device_error(exc):
+                logger.info("Spotify duck skipped because the player became inactive")
+                return _spotify_duck_skipped("no_active_device", device=chosen)
+            raise
+
         if not _SPOTIFY_DUCK_STATE.get("active"):
-            current_volume = chosen.get("volume_percent") if isinstance(chosen, dict) else None
             _SPOTIFY_DUCK_STATE.update(
                 {
                     "active": True,
@@ -481,14 +553,12 @@ def _spotify_duck_blocking(
                     "volume_percent": current_volume,
                 }
             )
-
-        client.volume(target_volume, device_id=chosen_id)
         _invalidate_spotify_audio_state_cache()
         return {
             "status": "ok",
             "active": True,
             "device_id": chosen_id,
-            "device_name": chosen_name,
+            "device_name": chosen.get("name"),
             "volume_percent": target_volume,
             "restore_volume_percent": _SPOTIFY_DUCK_STATE.get("volume_percent"),
         }
