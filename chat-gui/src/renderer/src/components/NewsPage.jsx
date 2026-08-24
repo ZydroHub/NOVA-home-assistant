@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Globe } from 'lucide-react';
+import { AlertTriangle, Globe } from 'lucide-react';
 import { ALERT_REFRESH_MS, fetchLatestAlerts, getAlertsCache, isCacheFresh } from '../integrationCache.js';
 
 const KEY_ALERT_REGION = 'nova.alertRegion';
@@ -209,9 +209,25 @@ export default function NewsPage() {
         return 'border-cyan-400/60 bg-cyan-500/10';
     };
 
+    const isExtremeAlert = (item) => String(item?.priority_label || item?.priority || '').trim().toUpperCase() === 'EXTREME';
+    const isVmaAlert = (item) => String(item?.source || '').toLowerCase().includes('vma');
+    const getAlertCardColor = (item) => {
+        if (isExtremeAlert(item)) {
+            return 'border-red-200/80 bg-red-950/70 ring-1 ring-red-300/50 shadow-[0_0_34px_rgba(248,113,113,0.28)]';
+        }
+        return getSourceColor(item.source);
+    };
+
     const sortedItems = [...items].sort((a, b) => (b.priority_rank || 0) - (a.priority_rank || 0));
     const activeRegionLabel = REGION_OPTIONS.find((option) => option.value === region)?.label || 'Sweden';
-    const priorityLabelFromRank = (rank = 0) => {
+    const priorityLabelFromItem = (item) => {
+        const label = String(item?.priority_label || item?.priority || '').trim().toUpperCase();
+        if (label === 'EXTREME') return { text: 'EXTREME', color: 'bg-red-700/85 border-red-200/70' };
+        if (label === 'HIGH') return { text: 'HIGH', color: 'bg-red-500/75 border-red-400/60' };
+        if (label === 'MEDIUM') return { text: 'MEDIUM', color: 'bg-yellow-500/60 border-yellow-400/50' };
+        if (label === 'LOW') return { text: 'LOW', color: 'bg-cyan-500/10 border-cyan-300/30' };
+
+        const rank = Number(item?.priority_rank) || 0;
         if (rank >= 80) return { text: 'High', color: 'bg-red-500/75 border-red-400/60' };
         if (rank >= 60) return { text: 'Medium', color: 'bg-yellow-500/60 border-yellow-400/50' };
         return { text: 'Low', color: 'bg-cyan-500/10 border-cyan-300/30' };
@@ -423,53 +439,66 @@ export default function NewsPage() {
                                 transition={{ duration: 0.24 }}
                                 className="space-y-3"
                             >
-                                {sortedItems.map((item, idx) => (
-                                    <motion.div
-                                        key={`${item.title}-${idx}`}
-                                        custom={idx}
-                                        variants={listItemVariants}
-                                        initial="hidden"
-                                        animate="visible"
-                                        className={`block p-4 rounded-2xl border transition-all cursor-default ${getSourceColor(item.source)}`}
-                                        whileHover={{ scale: 1.012, y: -1 }}
-                                    >
-                                        <div className="flex gap-3">
-                                            <motion.div
-                                                className="text-2xl flex-shrink-0"
-                                                animate={{ rotate: [0, 5, -5, 0] }}
-                                                transition={{ duration: 0.65, delay: idx * 0.03 }}
-                                            >
-                                                {getSourceIcon(item.source)}
-                                            </motion.div>
-                                            <div className="flex-1 min-w-0">
-                                                <div className="flex items-center gap-2 flex-wrap">
-                                                    <div className="text-sm font-bold text-cyan-200 uppercase tracking-wider">
+                                {sortedItems.map((item, idx) => {
+                                    const extreme = isExtremeAlert(item);
+                                    const vma = isVmaAlert(item);
+                                    return (
+                                        <motion.div
+                                            key={`${item.title}-${idx}`}
+                                            custom={idx}
+                                            variants={listItemVariants}
+                                            initial="hidden"
+                                            animate="visible"
+                                            className={`block p-4 rounded-2xl border transition-all cursor-default ${getAlertCardColor(item)}`}
+                                            whileHover={{ scale: 1.012, y: -1 }}
+                                        >
+                                            {extreme && (
+                                                <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-red-200/40 bg-red-500/20 px-3 py-2">
+                                                    <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.16em] text-red-50">
+                                                        <AlertTriangle size={16} />
+                                                        {vma ? 'VMA - Important Public Warning' : 'Extreme Alert'}
+                                                    </div>
+                                                    <div className="rounded-full border border-red-100/45 bg-red-100/20 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.14em] text-red-50">
+                                                        Global
+                                                    </div>
+                                                </div>
+                                            )}
+                                            <div className="flex gap-3">
+                                                <motion.div
+                                                    className={`flex-shrink-0 ${extreme ? 'grid h-9 w-9 place-items-center rounded-full bg-red-500/30 text-red-50 ring-1 ring-red-100/50' : 'text-2xl'}`}
+                                                    animate={extreme ? { scale: [1, 1.08, 1] } : { rotate: [0, 5, -5, 0] }}
+                                                    transition={{ duration: extreme ? 1.15 : 0.65, repeat: extreme ? Infinity : 0, delay: idx * 0.03 }}
+                                                >
+                                                    {extreme ? <AlertTriangle size={22} /> : getSourceIcon(item.source)}
+                                                </motion.div>
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex items-center gap-2 flex-wrap">
+                                                        <div className={`text-sm font-bold uppercase tracking-wider ${extreme ? 'text-red-100' : 'text-cyan-200'}`}>
                                                             {item.source || 'Alert'}
                                                         </div>
-                                                        {/* Priority pill replaces the old priority_label tag */}
                                                         {(() => {
-                                                            const p = priorityLabelFromRank(Number(item.priority_rank) || 0);
+                                                            const p = priorityLabelFromItem(item);
                                                             return (
-                                                                <div className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold uppercase tracking-[0.12em] ${p.color} text-white`}> 
+                                                                <div className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold uppercase tracking-[0.12em] ${p.color} text-white`}>
                                                                     {p.text}
                                                                 </div>
                                                             );
                                                         })()}
-                                                </div>
-                                                <div className="text-sm text-white mt-1 line-clamp-2 font-semibold">
-                                                    {item.title}
-                                                </div>
-                                                {item.location && (
-                                                    <div className="text-xs text-cyan-300/60 mt-1 flex items-center gap-1">
-                                                        <Globe size={12} />
-                                                        {item.location}
                                                     </div>
-                                                )}
-                                                {/* Published datetime removed from item view (shown in subtitle elsewhere) */}
+                                                    <div className={`${extreme ? 'text-base text-white' : 'text-sm text-white'} mt-1 line-clamp-2 font-semibold`}>
+                                                        {item.title}
+                                                    </div>
+                                                    {item.location && (
+                                                        <div className={`text-xs mt-1 flex items-center gap-1 ${extreme ? 'text-red-100/80' : 'text-cyan-300/60'}`}>
+                                                            <Globe size={12} />
+                                                            {item.location}
+                                                        </div>
+                                                    )}
+                                                </div>
                                             </div>
-                                        </div>
-                                    </motion.div>
-                                ))}
+                                        </motion.div>
+                                    );
+                                })}
                             </motion.div>
                         )}
                     </AnimatePresence>

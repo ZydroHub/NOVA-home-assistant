@@ -25,6 +25,9 @@ DEFAULT_ALERT_SETTINGS = {
 DEFAULT_TELEGRAM_SETTINGS = {
     "startup_notifications": bool(TELEGRAM_STARTUP_NOTIFICATIONS_ENABLED),
 }
+DEFAULT_ALERT_BEHAVIOR_SETTINGS = {
+    "global_extreme_alerts": True,
+}
 DEFAULT_VOICE_SETTINGS = {
     "language": (os.getenv("WHISPER_LANGUAGE", "en") or "en").strip().lower(),
     "always_listening": True,
@@ -46,10 +49,12 @@ class AlertSettingsStore:
         self.persist = persist
         self.defaults = self._normalize_payload(defaults or DEFAULT_ALERT_SETTINGS)
         self.telegram_defaults = dict(DEFAULT_TELEGRAM_SETTINGS)
+        self.behavior_defaults = dict(DEFAULT_ALERT_BEHAVIOR_SETTINGS)
         self.voice_defaults = self._normalize_voice_payload(DEFAULT_VOICE_SETTINGS)
         self._lock = threading.Lock()
         self._settings = dict(self.defaults)
         self._telegram_settings = dict(self.telegram_defaults)
+        self._behavior_settings = dict(self.behavior_defaults)
         self._voice_settings = self._copy_voice_settings(self.voice_defaults)
         self._load()
 
@@ -60,6 +65,10 @@ class AlertSettingsStore:
     def get_telegram(self) -> dict[str, bool]:
         with self._lock:
             return dict(self._telegram_settings)
+
+    def get_behavior(self) -> dict[str, bool]:
+        with self._lock:
+            return dict(self._behavior_settings)
 
     def get_voice_settings(self) -> dict[str, object]:
         with self._lock:
@@ -105,6 +114,15 @@ class AlertSettingsStore:
             self._save_locked()
             return dict(self._telegram_settings)
 
+    def update_behavior(self, values: dict[str, object]) -> dict[str, bool]:
+        normalized_values = self._normalize_behavior_payload(values)
+        if not normalized_values:
+            return self.get_behavior()
+        with self._lock:
+            self._behavior_settings.update(normalized_values)
+            self._save_locked()
+            return dict(self._behavior_settings)
+
     def update_voice_settings(self, values: dict[str, object]) -> dict[str, object]:
         normalized_values = self._normalize_voice_payload(values, allow_partial=True)
         if not normalized_values:
@@ -141,6 +159,9 @@ class AlertSettingsStore:
             telegram_values = payload.get("telegram")
             if isinstance(telegram_values, dict):
                 self._telegram_settings.update(self._normalize_telegram_payload(telegram_values))
+            behavior_values = payload.get("behavior")
+            if isinstance(behavior_values, dict):
+                self._behavior_settings.update(self._normalize_behavior_payload(behavior_values))
             voice_values = payload.get("voice")
             if isinstance(voice_values, dict):
                 try:
@@ -156,6 +177,7 @@ class AlertSettingsStore:
             temp_path = self.path.with_suffix(self.path.suffix + ".tmp")
             payload = {
                 "alerts": dict(self._settings),
+                "behavior": dict(self._behavior_settings),
                 "telegram": dict(self._telegram_settings),
                 "voice": self._copy_voice_settings(self._voice_settings),
             }
@@ -179,6 +201,12 @@ class AlertSettingsStore:
         result: dict[str, bool] = {}
         if "startup_notifications" in payload:
             result["startup_notifications"] = self._coerce_bool(payload["startup_notifications"])
+        return result
+
+    def _normalize_behavior_payload(self, payload: dict[str, object]) -> dict[str, bool]:
+        result: dict[str, bool] = {}
+        if "global_extreme_alerts" in payload:
+            result["global_extreme_alerts"] = self._coerce_bool(payload["global_extreme_alerts"])
         return result
 
     def _normalize_voice_payload(self, payload: dict[str, object], *, allow_partial: bool = False) -> dict[str, object]:

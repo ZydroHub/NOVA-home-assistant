@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { apiFetch } from '../apiClient.js';
 import { useKeyboardSettings } from '../contexts/KeyboardContext.jsx';
+import { clearAlertsCache } from '../integrationCache.js';
 import { pageEntrance, panelEntrance, tactile } from '../motionPresets.js';
 import { NAV_ITEMS, readHiddenTabs, writeHiddenTabs } from '../navigationSettings.js';
 
@@ -125,6 +126,7 @@ export default function Settings() {
     const [telegramStartupNotifications, setTelegramStartupNotifications] = React.useState(true);
     const [telegramSettingsPending, setTelegramSettingsPending] = React.useState(false);
     const [alertSettings, setAlertSettings] = React.useState({ nacka: true, stockholm: true });
+    const [globalExtremeAlerts, setGlobalExtremeAlerts] = React.useState(true);
     const [alertSettingsLoading, setAlertSettingsLoading] = React.useState(true);
     const [alertSettingsPending, setAlertSettingsPending] = React.useState('');
     const [alertSettingsError, setAlertSettingsError] = React.useState('');
@@ -190,6 +192,7 @@ export default function Settings() {
                         nacka: Boolean(result?.alerts?.nacka),
                         stockholm: Boolean(result?.alerts?.stockholm),
                     });
+                    setGlobalExtremeAlerts(result?.behavior?.global_extreme_alerts !== false);
                     setTelegramStartupNotifications(result?.telegram?.startup_notifications !== false);
                     setAlertSettingsError('');
                 }
@@ -350,9 +353,32 @@ export default function Settings() {
                 nacka: Boolean(result?.alerts?.nacka),
                 stockholm: Boolean(result?.alerts?.stockholm),
             });
+            setGlobalExtremeAlerts(result?.behavior?.global_extreme_alerts !== false);
+            clearAlertsCache();
             window.dispatchEvent(new CustomEvent('nova-settings-updated'));
         } catch (error) {
             setAlertSettingsError(error?.message || 'Failed to update alert settings.');
+        } finally {
+            setAlertSettingsPending('');
+        }
+    };
+
+    const handleGlobalExtremeAlertsChange = async (enabled) => {
+        if (alertSettingsPending) return;
+
+        setAlertSettingsPending('global_extreme_alerts');
+        setAlertSettingsError('');
+        try {
+            const result = await apiFetch('/settings/alerts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ behavior: { global_extreme_alerts: enabled } }),
+            });
+            setGlobalExtremeAlerts(result?.behavior?.global_extreme_alerts !== false);
+            clearAlertsCache();
+            window.dispatchEvent(new CustomEvent('nova-settings-updated'));
+        } catch (error) {
+            setAlertSettingsError(error?.message || 'Failed to update global extreme alerts.');
         } finally {
             setAlertSettingsPending('');
         }
@@ -578,6 +604,19 @@ export default function Settings() {
 
                         <Panel title="Location Alerts" icon={MapPin}>
                             <div className="space-y-3">
+                                <SettingRow
+                                    icon={Radio}
+                                    title="Global extreme alerts"
+                                    description={globalExtremeAlerts ? 'Show EXTREME alerts everywhere' : 'Show EXTREME alerts only in matching region or Sweden'}
+                                >
+                                    <ToggleSwitch
+                                        checked={globalExtremeAlerts}
+                                        onChange={handleGlobalExtremeAlertsChange}
+                                        disabled={alertSettingsLoading || Boolean(alertSettingsPending)}
+                                        label="Global extreme alerts"
+                                    />
+                                    {alertSettingsPending === 'global_extreme_alerts' ? <Loader2 size={16} className="ml-2 animate-spin text-cyan-100/70" /> : null}
+                                </SettingRow>
                                 {[
                                     ['nacka', 'Nacka', 'Local municipal alerts'],
                                     ['stockholm', 'Stockholm', 'Regional city signal'],

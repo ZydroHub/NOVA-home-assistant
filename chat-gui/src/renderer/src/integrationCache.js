@@ -3,7 +3,7 @@ import { apiFetch } from './apiClient.js';
 export const WEATHER_REFRESH_MS = 120000;
 export const ALERT_REFRESH_MS = 900000;
 
-const ALERT_FETCH_TIMEOUT_MS = 20000;
+const ALERT_FETCH_TIMEOUT_MS = 45000;
 
 let latestWeatherCache = null;
 let weatherRequest = null;
@@ -84,6 +84,11 @@ function normalizeAlertItem(item) {
 
 export function getAlertsCache(region) {
     return alertsCacheByRegion.get(region) || null;
+}
+
+export function clearAlertsCache() {
+    alertsCacheByRegion.clear();
+    alertRequestsByRegion.clear();
 }
 
 export async function fetchLatestAlerts(region) {

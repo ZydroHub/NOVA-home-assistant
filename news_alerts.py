@@ -4,16 +4,59 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import threading
+import unicodedata
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
 _SWEDISH_ALERTS_CACHE_LOCK = threading.Lock()
 _SWEDISH_ALERTS_CACHE: dict[str, dict[str, object]] = {}
+_ALERT_SEVERITY_CACHE_LOCK = threading.Lock()
+_ALERT_SEVERITY_CACHE: dict[str, tuple[int, str]] = {}
+_ALERT_SEVERITY_PENDING: set[str] = set()
+_ALERT_SEVERITY_LLM_LOCK = threading.Lock()
+_ALERT_SEVERITY_LLM = None
+AlertSeverityClassifier = Callable[[str, str, str, str, str], str]
+PolisenSeverityClassifier = Callable[[str, str, str, str], str]
+_ALERT_SEVERITY_CLASSIFIER: AlertSeverityClassifier | None = None
+_ALERT_SEVERITY_CLASSIFIER_LOCK = threading.Lock()
+ALERT_SEVERITY_RANKS = {
+    "LOW": 25,
+    "MEDIUM": 50,
+    "HIGH": 75,
+    "EXTREME": 100,
+}
+ALERT_SEVERITY_FALLBACK = "MEDIUM"
+
+# Backwards-compatible aliases for existing tests and any internal imports.
+_POLISEN_SEVERITY_CACHE_LOCK = _ALERT_SEVERITY_CACHE_LOCK
+_POLISEN_SEVERITY_CACHE = _ALERT_SEVERITY_CACHE
+POLISEN_SEVERITY_RANKS = ALERT_SEVERITY_RANKS
+POLISEN_SEVERITY_FALLBACK = ALERT_SEVERITY_FALLBACK
+
+
+def register_alert_severity_classifier(classifier: AlertSeverityClassifier | None) -> None:
+    """Register a runtime classifier, usually backed by the already loaded chat model."""
+    global _ALERT_SEVERITY_CLASSIFIER
+    with _ALERT_SEVERITY_CLASSIFIER_LOCK:
+        _ALERT_SEVERITY_CLASSIFIER = classifier
+
+
+def register_polisen_severity_classifier(classifier: PolisenSeverityClassifier | None) -> None:
+    if classifier is None:
+        register_alert_severity_classifier(None)
+        return
+
+    def wrapped(source: str, title: str, summary: str, location: str, published: str) -> str:
+        return classifier(title, summary, location, published)
+
+    register_alert_severity_classifier(wrapped)
 
 
 def fetch_json(url: str, timeout: float = 8.0) -> dict:
@@ -58,6 +101,421 @@ def alert_priority(source: str, title: str = "") -> tuple[int, str]:
             return 90, "Alert"
         return 60, "Notice"
     return 20, "News"
+
+
+def _severity_match_text(*parts: str) -> str:
+    text = " ".join(_safe_text(part) for part in parts).lower()
+    normalized = unicodedata.normalize("NFKD", text)
+    ascii_text = normalized.encode("ascii", errors="ignore").decode("ascii")
+    return f"{text} {ascii_text}"
+
+
+def _alert_severity_cache_key(
+    *,
+    source: str,
+    title: str,
+    summary: str = "",
+    location: str = "",
+    published: str = "",
+    url: str = "",
+) -> str:
+    seed = "|".join(
+        [
+            _safe_text(source).lower(),
+            _safe_text(title).lower(),
+            _safe_text(summary).lower(),
+            _safe_text(location).lower(),
+            _safe_text(published).lower(),
+            _safe_text(url).lower(),
+        ]
+    )
+    return hashlib.sha1(seed.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _polisen_severity_cache_key(**kwargs) -> str:
+    return _alert_severity_cache_key(source="Polisen", **kwargs)
+
+
+def _normalize_alert_severity(value: object) -> str:
+    label = str(value or "").strip().upper()
+    return label if label in ALERT_SEVERITY_RANKS else ALERT_SEVERITY_FALLBACK
+
+
+def _normalize_polisen_severity(value: object) -> str:
+    return _normalize_alert_severity(value)
+
+
+def _alert_severity_result(label: object) -> tuple[int, str]:
+    normalized = _normalize_alert_severity(label)
+    return ALERT_SEVERITY_RANKS[normalized], normalized
+
+
+def _polisen_severity_result(label: object) -> tuple[int, str]:
+    return _alert_severity_result(label)
+
+
+def _alert_source_floor_label(source: str) -> str | None:
+    source_l = _severity_match_text(source)
+    if "krisinformation" in source_l and "vma" in source_l:
+        return "EXTREME"
+    if "krisinformation" in source_l:
+        return "HIGH"
+    return None
+
+
+def _allow_extreme_alert_severity(source: str, title: str, summary: str = "") -> bool:
+    source_l = _severity_match_text(source)
+    text = _severity_match_text(title, summary)
+    if "krisinformation" in source_l and "vma" in source_l:
+        return True
+    extreme_keywords = (
+        "terror",
+        "terrorism",
+        "masskjut",
+        "mass shooting",
+        "manga doda",
+        "flera doda",
+        "manga skadade",
+        "katastrof",
+        "explosion",
+        "bomb",
+        "sprangning",
+        "skoldad",
+        "skolattack",
+        "skolskjut",
+        "school attack",
+        "school shooting",
+        "gisslan",
+        "pagaende dodligt vald",
+        "vma",
+        "viktigt meddelande",
+    )
+    return any(keyword in text for keyword in extreme_keywords)
+
+
+def _alert_severity_guard_label(source: str, title: str, summary: str = "") -> str | None:
+    source_l = _severity_match_text(source)
+    text = _severity_match_text(title, summary)
+    if "krisinformation" in source_l and "vma" in source_l:
+        return "EXTREME"
+    if _allow_extreme_alert_severity(source, title, summary):
+        return "EXTREME"
+    if "polisen" not in source_l:
+        return None
+
+    low_keywords = (
+        "trafikkontroll",
+        "kontroll person",
+        "kontroll fordon",
+        "nykterhetskontroll",
+        "hastighetskontroll",
+        "sammanfattning",
+        "ovrigt",
+        "rattfylleri",
+        "stold",
+        "bedrageri",
+        "olovligt",
+        "snatteri",
+        "skadegorelse",
+        "fimp",
+        "balkonglada",
+        "inbrott",
+    )
+    if any(keyword in text for keyword in low_keywords):
+        return "LOW"
+    return None
+
+
+def _alert_should_bypass_region(source: str, title: str, summary: str = "") -> bool:
+    return _alert_severity_guard_label(source, title, summary) == "EXTREME"
+
+
+def _include_alert_for_region(
+    selected_region: str,
+    priority_label: str,
+    *region_parts: str,
+    global_extreme_alerts: bool = True,
+) -> bool:
+    if global_extreme_alerts and _normalize_alert_severity(priority_label) == "EXTREME":
+        return True
+    return match_region_text(selected_region, *region_parts)
+
+
+def _polisen_severity_guard_label(title: str, summary: str = "") -> str | None:
+    return _alert_severity_guard_label("Polisen", title, summary)
+
+
+def _allow_extreme_polisen_severity(title: str, summary: str = "") -> bool:
+    return _allow_extreme_alert_severity("Polisen", title, summary)
+
+
+def _get_alert_severity_llm():
+    global _ALERT_SEVERITY_LLM
+    if _ALERT_SEVERITY_LLM is not None:
+        return _ALERT_SEVERITY_LLM
+
+    with _ALERT_SEVERITY_LLM_LOCK:
+        if _ALERT_SEVERITY_LLM is not None:
+            return _ALERT_SEVERITY_LLM
+
+        from huggingface_hub import hf_hub_download
+        from llama_cpp import Llama
+        from model_settings import get_chat_model_settings_store, get_chat_model_spec
+
+        selected_model = get_chat_model_settings_store().get_selected_model()
+        model = get_chat_model_spec(selected_model)
+        if not model.path.exists():
+            logger.info("Downloading alert severity model %s...", model.label)
+            model.path.parent.mkdir(parents=True, exist_ok=True)
+            hf_hub_download(repo_id=model.repo_id, filename=model.filename, local_dir=str(model.path.parent))
+
+        try:
+            threads = max(1, int(os.getenv("NOVA_LLM_THREADS", str(min(4, os.cpu_count() or 4)))))
+        except (TypeError, ValueError):
+            threads = min(4, os.cpu_count() or 4)
+        _ALERT_SEVERITY_LLM = Llama(
+            model_path=str(model.path),
+            n_ctx=2048,
+            n_threads=threads,
+            verbose=False,
+        )
+        return _ALERT_SEVERITY_LLM
+
+
+def _get_polisen_severity_llm():
+    return _get_alert_severity_llm()
+
+
+def _classify_alert_severity_with_ai(
+    *,
+    source: str,
+    title: str,
+    summary: str = "",
+    location: str = "",
+    published: str = "",
+) -> str:
+    with _ALERT_SEVERITY_CLASSIFIER_LOCK:
+        classifier = _ALERT_SEVERITY_CLASSIFIER
+    if classifier is not None:
+        try:
+            return str(classifier(source, title, summary, location, published)).strip().upper()
+        except Exception as exc:
+            logger.debug("Registered alert severity classifier failed; falling back to local loader: %s", exc)
+
+    prompt = (
+        "Rank the severity of this Swedish alert for a home alert dashboard.\n"
+        "Answer exactly one word: LOW, MEDIUM, HIGH, or EXTREME.\n\n"
+        "Rubric:\n"
+        "LOW: minor incidents, checks, theft, traffic stops, routine matters.\n"
+        "MEDIUM: clear risk or serious local event, fire, accident, ongoing crime without broad public danger.\n"
+        "HIGH: serious violent event, major crime, larger accident, active danger to multiple people, large police operation.\n"
+        "EXTREME: use only for the worst cases: VMA/important public warning, terrorism, school attack, mass shooting, many dead/injured, disaster, major explosion, or ongoing extreme public danger.\n"
+        "A school attack is EXTREME. A VMA from Krisinformation is EXTREME.\n"
+        "A single shooting, assault, robbery, or one person badly injured is usually HIGH, not EXTREME.\n\n"
+        f"Source: {source}\n"
+        f"Title: {title}\n"
+        f"Summary: {summary}\n"
+        f"Location: {location}\n"
+        f"Published: {published}\n"
+    )
+    llm = _get_alert_severity_llm()
+    result = llm.create_chat_completion(
+        messages=[
+            {"role": "system", "content": "You are a strict alert severity classifier. Output one label only."},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=4,
+        temperature=0.0,
+        stop=["\n", ".", ","],
+    )
+    try:
+        return str(result["choices"][0]["message"]["content"]).strip().upper()
+    except (KeyError, IndexError, TypeError):
+        return ALERT_SEVERITY_FALLBACK
+
+
+def _classify_polisen_severity_with_ai(*, title: str, summary: str = "", location: str = "", published: str = "") -> str:
+    return _classify_alert_severity_with_ai(
+        source="Polisen",
+        title=title,
+        summary=summary,
+        location=location,
+        published=published,
+    )
+
+
+def _max_alert_severity_label(first: str, second: str) -> str:
+    first_label = _normalize_alert_severity(first)
+    second_label = _normalize_alert_severity(second)
+    return first_label if ALERT_SEVERITY_RANKS[first_label] >= ALERT_SEVERITY_RANKS[second_label] else second_label
+
+
+def _finalize_alert_severity_label(source: str, title: str, summary: str, label: object, floor_label: str | None) -> str:
+    normalized = _normalize_alert_severity(label)
+    if floor_label:
+        normalized = _max_alert_severity_label(normalized, floor_label)
+    if normalized == "EXTREME" and not _allow_extreme_alert_severity(source, title, summary):
+        normalized = "HIGH"
+    if floor_label:
+        normalized = _max_alert_severity_label(normalized, floor_label)
+    return normalized
+
+
+def _fallback_alert_severity_label(source: str) -> str:
+    return _alert_source_floor_label(source) or ALERT_SEVERITY_FALLBACK
+
+
+def _clear_swedish_alerts_cache() -> None:
+    with _SWEDISH_ALERTS_CACHE_LOCK:
+        _SWEDISH_ALERTS_CACHE.clear()
+
+
+def _classify_alert_severity_background(
+    *,
+    key: str,
+    source: str,
+    title: str,
+    summary: str,
+    location: str,
+    published: str,
+    floor_label: str | None,
+) -> None:
+    try:
+        label = _classify_alert_severity_with_ai(
+            source=source,
+            title=title,
+            summary=summary,
+            location=location,
+            published=published,
+        )
+        final_label = _finalize_alert_severity_label(source, title, summary, label, floor_label)
+        result = _alert_severity_result(final_label)
+        with _ALERT_SEVERITY_CACHE_LOCK:
+            _ALERT_SEVERITY_CACHE[key] = result
+        _clear_swedish_alerts_cache()
+        logger.debug("Alert AI severity updated in background for %s", source or "Alert")
+    except Exception as exc:
+        logger.debug("%s background AI severity classification failed: %s", source or "Alert", exc)
+    finally:
+        with _ALERT_SEVERITY_CACHE_LOCK:
+            _ALERT_SEVERITY_PENDING.discard(key)
+
+
+def _schedule_alert_severity_background(
+    *,
+    key: str,
+    source: str,
+    title: str,
+    summary: str,
+    location: str,
+    published: str,
+    floor_label: str | None,
+) -> None:
+    with _ALERT_SEVERITY_CACHE_LOCK:
+        if key in _ALERT_SEVERITY_PENDING:
+            return
+        _ALERT_SEVERITY_PENDING.add(key)
+
+    worker = threading.Thread(
+        target=_classify_alert_severity_background,
+        kwargs={
+            "key": key,
+            "source": source,
+            "title": title,
+            "summary": summary,
+            "location": location,
+            "published": published,
+            "floor_label": floor_label,
+        },
+        name="nova-alert-severity",
+        daemon=True,
+    )
+    worker.start()
+
+
+def alert_ai_severity(
+    *,
+    source: str,
+    title: str,
+    summary: str = "",
+    location: str = "",
+    published: str = "",
+    url: str = "",
+    wait_for_ai: bool = True,
+) -> tuple[int, str]:
+    key = _alert_severity_cache_key(
+        source=source,
+        title=title,
+        summary=summary,
+        location=location,
+        published=published,
+        url=url,
+    )
+    with _ALERT_SEVERITY_CACHE_LOCK:
+        cached = _ALERT_SEVERITY_CACHE.get(key)
+        if cached:
+            return cached
+
+    guarded_label = _alert_severity_guard_label(source, title, summary)
+    if guarded_label:
+        result = _alert_severity_result(guarded_label)
+        with _ALERT_SEVERITY_CACHE_LOCK:
+            _ALERT_SEVERITY_CACHE[key] = result
+        return result
+
+    floor_label = _alert_source_floor_label(source)
+    if not wait_for_ai:
+        fallback_label = _fallback_alert_severity_label(source)
+        result = _alert_severity_result(fallback_label)
+        with _ALERT_SEVERITY_CACHE_LOCK:
+            _ALERT_SEVERITY_CACHE[key] = result
+        _schedule_alert_severity_background(
+            key=key,
+            source=source,
+            title=title,
+            summary=summary,
+            location=location,
+            published=published,
+            floor_label=floor_label,
+        )
+        return result
+
+    try:
+        label = _classify_alert_severity_with_ai(
+            source=source,
+            title=title,
+            summary=summary,
+            location=location,
+            published=published,
+        )
+        result = _alert_severity_result(_finalize_alert_severity_label(source, title, summary, label, floor_label))
+    except Exception as exc:
+        logger.warning("%s AI severity classification failed; using fallback: %s", source or "Alert", exc)
+        result = _alert_severity_result(_fallback_alert_severity_label(source))
+
+    with _ALERT_SEVERITY_CACHE_LOCK:
+        _ALERT_SEVERITY_CACHE[key] = result
+    return result
+
+
+def polisen_ai_severity(
+    *,
+    title: str,
+    summary: str = "",
+    location: str = "",
+    published: str = "",
+    url: str = "",
+    wait_for_ai: bool = True,
+) -> tuple[int, str]:
+    return alert_ai_severity(
+        source="Polisen",
+        title=title,
+        summary=summary,
+        location=location,
+        published=published,
+        url=url,
+        wait_for_ai=wait_for_ai,
+    )
 
 
 def region_keywords(region: str) -> tuple[str, ...]:
@@ -154,6 +612,19 @@ def published_sort_value(value: str) -> float:
         return float("-inf")
 
 
+def alert_source_sort_rank(source: str) -> int:
+    source_l = _severity_match_text(source)
+    if "krisinformation" in source_l and "vma" in source_l:
+        return 40
+    if "krisinformation" in source_l:
+        return 30
+    if "sos" in source_l:
+        return 20
+    if "polisen" in source_l:
+        return 10
+    return 0
+
+
 def balance_items_by_source(items: list[dict]) -> list[dict]:
     """Interleave sources so one feed does not dominate the Sweden list."""
     if not items:
@@ -161,9 +632,9 @@ def balance_items_by_source(items: list[dict]) -> list[dict]:
 
     preferred_order = [
         "Krisinformation VMA",
+        "Krisinformation",
         "SOS Alarm",
         "Polisen",
-        "Krisinformation",
     ]
 
     buckets: dict[str, list[dict]] = {}
@@ -288,7 +759,7 @@ def _safe_field(value: object, default: str = "") -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def fetch_swedish_alerts(limit: int = 12, region: str = "nacka") -> dict:
+def fetch_swedish_alerts(limit: int = 12, region: str = "nacka", *, global_extreme_alerts: bool = True) -> dict:
     selected_region = normalize_alert_region(region)
     try:
         limit_value = max(1, int(limit))
@@ -296,12 +767,13 @@ def fetch_swedish_alerts(limit: int = 12, region: str = "nacka") -> dict:
         limit_value = 12
 
     cache_ttl = timedelta(minutes=15)
-    baseline_limit = 180 if selected_region == "sweden" else 60
+    baseline_limit = 180 if selected_region == "sweden" else max(12, limit_value * 3)
     fetch_limit = max(limit_value, baseline_limit)
     now = datetime.now()
+    cache_key = f"{selected_region}:global_extreme={bool(global_extreme_alerts)}"
 
     with _SWEDISH_ALERTS_CACHE_LOCK:
-        cached_entry = _SWEDISH_ALERTS_CACHE.get(selected_region)
+        cached_entry = _SWEDISH_ALERTS_CACHE.get(cache_key)
         if cached_entry:
             cached_at = cached_entry.get("last_fetched")
             cached_result = cached_entry.get("result")
@@ -337,18 +809,29 @@ def fetch_swedish_alerts(limit: int = 12, region: str = "nacka") -> dict:
             summary = _safe_field(entry.get("summary"))
             location = polisen_location_name(entry)
             published = _safe_field(entry.get("datetime"))
-            if not match_region_text(selected_region, title, location, summary):
-                continue
             if not is_within_last_days(published, days=days_back):
                 continue
+            region_match = match_region_text(selected_region, title, location, summary)
+            if not region_match and (not global_extreme_alerts or not _alert_should_bypass_region("Polisen", title, summary)):
+                continue
 
-            priority_rank, priority_label = alert_priority("Polisen", title)
+            url = entry.get("url") or "https://polisen.se/aktuellt/"
+            priority_rank, priority_label = polisen_ai_severity(
+                title=title,
+                summary=summary,
+                location=location,
+                published=published,
+                url=str(url),
+                wait_for_ai=False,
+            )
+            if not _include_alert_for_region(selected_region, priority_label, title, location, summary, global_extreme_alerts=global_extreme_alerts):
+                continue
             items.append(
                 {
                     "source": "Polisen",
                     "title": title,
                     "description": summary or location,
-                    "url": entry.get("url") or "https://polisen.se/aktuellt/",
+                    "url": url,
                     "published": published,
                     "location": location,
                     "priority_rank": priority_rank,
@@ -377,18 +860,27 @@ def fetch_swedish_alerts(limit: int = 12, region: str = "nacka") -> dict:
             title = _safe_field(entry.get("Headline") or entry.get("headline") or entry.get("title"), "VMA")[:100]
             location = _safe_field(entry.get("Area") or entry.get("area"))
             published = _safe_field(entry.get("Published") or entry.get("published") or entry.get("Updated"))
-            if not match_region_text(selected_region, title, location):
-                continue
             if not is_within_last_days(published, days=days_back):
                 continue
 
-            priority_rank, priority_label = alert_priority("Krisinformation VMA", title)
+            url = entry.get("Link") or entry.get("link") or "https://krisinformation.se/"
+            priority_rank, priority_label = alert_ai_severity(
+                source="Krisinformation VMA",
+                title=title,
+                summary=location,
+                location=location,
+                published=published,
+                url=str(url),
+                wait_for_ai=False,
+            )
+            if not _include_alert_for_region(selected_region, priority_label, title, location, global_extreme_alerts=global_extreme_alerts):
+                continue
             items.append(
                 {
                     "source": "Krisinformation VMA",
                     "title": title,
                     "description": location,
-                    "url": entry.get("Link") or entry.get("link") or "https://krisinformation.se/",
+                    "url": url,
                     "published": published,
                     "location": location,
                     "priority_rank": priority_rank,
@@ -400,18 +892,30 @@ def fetch_swedish_alerts(limit: int = 12, region: str = "nacka") -> dict:
             title = _safe_field(entry.get("Headline") or entry.get("headline") or entry.get("Title") or entry.get("title"), "Alert")[:100]
             location = _safe_field(entry.get("Area") or entry.get("area"))
             published = _safe_field(entry.get("Published") or entry.get("published") or entry.get("Updated") or entry.get("updated"))
-            if not match_region_text(selected_region, title, location):
-                continue
             if not is_within_last_days(published, days=days_back):
                 continue
+            region_match = match_region_text(selected_region, title, location)
+            if not region_match and (not global_extreme_alerts or not _alert_should_bypass_region("Krisinformation", title, location)):
+                continue
 
-            priority_rank, priority_label = alert_priority("Krisinformation", title)
+            url = entry.get("Link") or entry.get("link") or "https://krisinformation.se/"
+            priority_rank, priority_label = alert_ai_severity(
+                source="Krisinformation",
+                title=title,
+                summary=location,
+                location=location,
+                published=published,
+                url=str(url),
+                wait_for_ai=False,
+            )
+            if not _include_alert_for_region(selected_region, priority_label, title, location, global_extreme_alerts=global_extreme_alerts):
+                continue
             items.append(
                 {
                     "source": "Krisinformation",
                     "title": title,
                     "description": location,
-                    "url": entry.get("Link") or entry.get("link") or "https://krisinformation.se/",
+                    "url": url,
                     "published": published,
                     "location": location,
                     "priority_rank": priority_rank,
@@ -446,18 +950,30 @@ def fetch_swedish_alerts(limit: int = 12, region: str = "nacka") -> dict:
                 title = _safe_field(entry.get("headline") or entry.get("title"), "SOS Event")[:100]
                 location = _safe_field(entry.get("location"))
                 published = _safe_field(entry.get("timestamp") or entry.get("updated") or entry.get("published"))
-                if not match_region_text(selected_region, title, location):
-                    continue
                 if not is_within_last_days(published, days=days_back):
                     continue
+                region_match = match_region_text(selected_region, title, location)
+                if not region_match and (not global_extreme_alerts or not _alert_should_bypass_region("SOS Alarm", title, location)):
+                    continue
 
-                priority_rank, priority_label = alert_priority("SOS Alarm", title)
+                url = entry.get("url") or "https://www.sosalarm.se/"
+                priority_rank, priority_label = alert_ai_severity(
+                    source="SOS Alarm",
+                    title=title,
+                    summary=location,
+                    location=location,
+                    published=published,
+                    url=str(url),
+                    wait_for_ai=False,
+                )
+                if not _include_alert_for_region(selected_region, priority_label, title, location, global_extreme_alerts=global_extreme_alerts):
+                    continue
                 items.append(
                     {
                         "source": "SOS Alarm",
                         "title": title,
                         "description": location,
-                        "url": entry.get("url") or "https://www.sosalarm.se/",
+                        "url": url,
                         "published": published,
                         "location": location,
                         "priority_rank": priority_rank,
@@ -481,13 +997,16 @@ def fetch_swedish_alerts(limit: int = 12, region: str = "nacka") -> dict:
     deduped.sort(
         key=lambda item: (
             -int(item.get("priority_rank") or 0),
+            -alert_source_sort_rank(str(item.get("source") or "")),
             -published_sort_value(item.get("published") or ""),
             (item.get("title") or ""),
         )
     )
 
     if selected_region == "sweden":
-        deduped = balance_items_by_source(deduped)
+        extreme_items = [item for item in deduped if _normalize_alert_severity(item.get("priority_label")) == "EXTREME"]
+        remaining_items = [item for item in deduped if _normalize_alert_severity(item.get("priority_label")) != "EXTREME"]
+        deduped = extreme_items + balance_items_by_source(remaining_items)
 
     # ----------------------------------------- Stockholm broader Polisen fallback
     if not deduped and selected_region == "stockholm" and polisen_data_cache:
@@ -500,16 +1019,28 @@ def fetch_swedish_alerts(limit: int = 12, region: str = "nacka") -> dict:
             if key in fallback_seen:
                 continue
             fallback_seen.add(key)
+            summary = entry.get("summary") or _safe_text(polisen_location_name(entry))
+            published = entry.get("datetime") or ""
+            location = polisen_location_name(entry)
+            url = entry.get("url") or "https://polisen.se/aktuellt/"
+            priority_rank, priority_label = polisen_ai_severity(
+                title=title,
+                summary=str(summary),
+                location=location,
+                published=str(published),
+                url=str(url),
+                wait_for_ai=False,
+            )
             deduped.append(
                 {
                     "source": "Polisen",
                     "title": title,
-                    "description": entry.get("summary") or _safe_text(polisen_location_name(entry)),
-                    "url": entry.get("url") or "https://polisen.se/aktuellt/",
-                    "published": entry.get("datetime") or "",
-                    "location": polisen_location_name(entry),
-                    "priority_rank": alert_priority("Polisen", title)[0],
-                    "priority_label": "Police",
+                    "description": summary,
+                    "url": url,
+                    "published": published,
+                    "location": location,
+                    "priority_rank": priority_rank,
+                    "priority_label": priority_label,
                 }
             )
             if len(deduped) >= limit_value:
@@ -538,7 +1069,7 @@ def fetch_swedish_alerts(limit: int = 12, region: str = "nacka") -> dict:
         logger.debug("news_alerts: Swedish alerts fetched successfully from %s.", ", ".join(active_sources))
 
     with _SWEDISH_ALERTS_CACHE_LOCK:
-        _SWEDISH_ALERTS_CACHE[selected_region] = {
+        _SWEDISH_ALERTS_CACHE[cache_key] = {
             "last_fetched": now,
             "result": result,
         }

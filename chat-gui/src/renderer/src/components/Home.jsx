@@ -14,13 +14,36 @@ import {
     isCacheFresh,
 } from '../integrationCache.js';
 
-const HOME_ALERT_REGION = 'sweden';
+const ALERT_REGION_STORAGE_KEY = 'nova.alertRegion';
+const DEFAULT_HOME_ALERT_REGION = 'nacka';
 const INTERRUPTIBLE_VOICE_STATES = new Set(['thinking', 'generating', 'speaking']);
+
+function normalizeAlertRegion(region) {
+    if (region === 'nacka' || region === 'stockholm' || region === 'sweden') return region;
+    return DEFAULT_HOME_ALERT_REGION;
+}
+
+function readHomeAlertRegion() {
+    try {
+        return normalizeAlertRegion(localStorage.getItem(ALERT_REGION_STORAGE_KEY) || DEFAULT_HOME_ALERT_REGION);
+    } catch {
+        return DEFAULT_HOME_ALERT_REGION;
+    }
+}
+
+function isExtremeAlert(item) {
+    return String(item?.priority_label || item?.priority || '').trim().toUpperCase() === 'EXTREME';
+}
+
+function isVmaAlert(item) {
+    return String(item?.source || '').toLowerCase().includes('vma');
+}
 
 export default function Home() {
     const { voiceStatus, voiceStage, toggleVoice } = useWebSocket();
     const [weather, setWeather] = useState(() => getWeatherCache()?.data || null);
-    const [alerts, setAlerts] = useState(() => getAlertsCache(HOME_ALERT_REGION)?.items || []);
+    const [homeAlertRegion, setHomeAlertRegion] = useState(readHomeAlertRegion);
+    const [alerts, setAlerts] = useState(() => getAlertsCache(readHomeAlertRegion())?.items || []);
     const [alertsError, setAlertsError] = useState(null);
     const [musicPlaying, setMusicPlaying] = useState(false);
 
@@ -28,7 +51,7 @@ export default function Home() {
         let mounted = true;
         async function loadData() {
             const cachedWeather = getWeatherCache();
-            const cachedAlerts = getAlertsCache(HOME_ALERT_REGION);
+            const cachedAlerts = getAlertsCache(homeAlertRegion);
 
             if (cachedWeather?.data) setWeather(cachedWeather.data);
             if (cachedAlerts?.items) {
@@ -46,20 +69,18 @@ export default function Home() {
             }
             if (!isCacheFresh(cachedAlerts, ALERT_REFRESH_MS)) {
                 requests.push(
-                    fetchLatestAlerts(HOME_ALERT_REGION)
+                    fetchLatestAlerts(homeAlertRegion)
                         .then((entry) => ({ type: 'alerts', entry }))
                         .catch((error) => ({ type: 'alerts', error }))
                 );
             }
             if (requests.length === 0) return;
 
-            const [weatherResult, alertsResult] = await Promise.allSettled([
-                ...requests,
-            ]);
+            const results = await Promise.allSettled(requests);
 
             if (!mounted) return;
 
-            [weatherResult, alertsResult].forEach((result) => {
+            results.forEach((result) => {
                 if (result?.status !== 'fulfilled' || !result.value) return;
                 const { type, entry, error } = result.value;
                 if (type === 'weather') {
@@ -77,7 +98,7 @@ export default function Home() {
                         setAlertsError(null);
                     } else if (error) {
                         console.error('Alerts load failed', error);
-                        const fallback = getAlertsCache(HOME_ALERT_REGION);
+                        const fallback = getAlertsCache(homeAlertRegion);
                         if (fallback?.items) {
                             setAlerts(fallback.items);
                             setAlertsError(null);
@@ -94,6 +115,18 @@ export default function Home() {
         return () => {
             mounted = false;
             clearInterval(timer);
+        };
+    }, [homeAlertRegion]);
+
+    useEffect(() => {
+        const syncAlertRegion = () => {
+            setHomeAlertRegion(readHomeAlertRegion());
+        };
+        window.addEventListener('storage', syncAlertRegion);
+        window.addEventListener('focus', syncAlertRegion);
+        return () => {
+            window.removeEventListener('storage', syncAlertRegion);
+            window.removeEventListener('focus', syncAlertRegion);
         };
     }, []);
 
@@ -220,17 +253,31 @@ export default function Home() {
                     variants={panelEntrance}
                 >
                     <div className="text-xs opacity-70 mb-2 font-semibold tracking-[0.18em]">ALERTS</div>
-                    <div className="space-y-1">
+                    <div className="alerts-ticker-list space-y-1">
                         {alertsError && <div className="text-xs opacity-70">{alertsError}</div>}
-                        {alertsSorted.length > 0 ? alertsSorted.slice(0, 4).map((item, idx) => (
-                            <div key={`${item.title}-${idx}`} className="alert-item alert-item-static">
-                                <div className="alert-row-top">
-                                    <span className="alert-source">{item.source || 'Alert'}</span>
-                                    <span className="alert-priority">{item.priority_label || 'News'}</span>
+                        {alertsSorted.length > 0 ? alertsSorted.map((item, idx) => {
+                            const extreme = isExtremeAlert(item);
+                            const vma = isVmaAlert(item);
+                            return (
+                                <div
+                                    key={`${item.title}-${idx}`}
+                                    className={`alert-item alert-item-static ${extreme ? 'alert-item-extreme' : ''}`}
+                                >
+                                    {extreme && (
+                                        <div className="alert-emergency-kicker">
+                                            <span>{vma ? 'VMA' : 'EXTREME ALERT'}</span>
+                                            <span>GLOBAL</span>
+                                        </div>
+                                    )}
+                                    <div className="alert-row-top">
+                                        <span className="alert-source">{item.source || 'Alert'}</span>
+                                        <span className="alert-priority">{item.priority_label || 'News'}</span>
+                                    </div>
+                                    <span className="alert-title">{item.title}</span>
+                                    {extreme && item.location && <span className="alert-emergency-location">{item.location}</span>}
                                 </div>
-                                <span className="alert-title">{item.title}</span>
-                            </div>
-                        )) : <div className="text-xs opacity-50">No items yet</div>}
+                            );
+                        }) : <div className="text-xs opacity-50">No items yet</div>}
                     </div>
                 </motion.div>
             </motion.section>

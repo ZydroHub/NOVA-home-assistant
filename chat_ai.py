@@ -563,6 +563,54 @@ class AIState:
             return False
         return verdict.startswith("DUPLICATE")
 
+    def classify_alert_severity(
+        self,
+        source: str,
+        title: str,
+        summary: str = "",
+        location: str = "",
+        published: str = "",
+    ) -> str:
+        """Classify a Swedish alert with the active chat model."""
+        if self.llm is None:
+            self.load_model()
+
+        prompt = (
+            "Rank the severity of this Swedish alert for a home alert dashboard.\n"
+            "Answer exactly one word: LOW, MEDIUM, HIGH, or EXTREME.\n\n"
+            "Rubric:\n"
+            "LOW: minor incidents, checks, theft, traffic stops, routine matters.\n"
+            "MEDIUM: clear risk or serious local event, fire, accident, ongoing crime without broad public danger.\n"
+            "HIGH: serious violent event, major crime, larger accident, active danger to multiple people, large police operation.\n"
+            "EXTREME: use only for the worst cases: VMA/important public warning, terrorism, school attack, mass shooting, many dead/injured, disaster, major explosion, or ongoing extreme public danger.\n"
+            "A school attack is EXTREME. A VMA from Krisinformation is EXTREME.\n"
+            "A single shooting, assault, robbery, or one person badly injured is usually HIGH, not EXTREME.\n\n"
+            f"Source: {source}\n"
+            f"Title: {title}\n"
+            f"Summary: {summary}\n"
+            f"Location: {location}\n"
+            f"Published: {published}\n"
+        )
+
+        with self._memory_duplicate_lock:
+            result = self._current_llm().create_chat_completion(
+                messages=[
+                    {"role": "system", "content": "You are a strict alert severity classifier. Output one label only."},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=4,
+                temperature=0.0,
+                stop=["\n", ".", ","],
+            )
+        try:
+            return str(result["choices"][0]["message"]["content"]).strip().upper()
+        except (KeyError, IndexError, TypeError):
+            return "MEDIUM"
+
+    def classify_polisen_severity(self, title: str, summary: str = "", location: str = "", published: str = "") -> str:
+        """Classify a Polisen event with the active chat model."""
+        return self.classify_alert_severity("Polisen", title, summary, location, published)
+
     def _load_chat_model(self, model_id: str) -> None:
         model = get_chat_model_spec(model_id)
         if not model.path.exists():

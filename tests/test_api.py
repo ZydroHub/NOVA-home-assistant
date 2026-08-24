@@ -59,17 +59,23 @@ def test_alert_settings_api_get_and_post():
     data = resp.json()
     assert data["alerts"]["nacka"] is True
     assert data["alerts"]["stockholm"] is True
+    assert data["behavior"]["global_extreme_alerts"] is True
     assert data["telegram"]["startup_notifications"] is True
 
     resp = client.post(
         "/settings/alerts",
-        json={"alerts": {"stockholm": False}, "telegram": {"startup_notifications": False}},
+        json={
+            "alerts": {"stockholm": False},
+            "behavior": {"global_extreme_alerts": False},
+            "telegram": {"startup_notifications": False},
+        },
         headers=auth_headers(),
     )
     assert resp.status_code == 200
     data = resp.json()
     assert data["alerts"]["nacka"] is True
     assert data["alerts"]["stockholm"] is False
+    assert data["behavior"]["global_extreme_alerts"] is False
     assert data["telegram"]["startup_notifications"] is False
 
 

@@ -42,7 +42,7 @@ from config import (
     is_valid_control_token,
     setup_logging,
 )
-from news_alerts import fetch_swedish_alerts
+from news_alerts import fetch_swedish_alerts, register_alert_severity_classifier
 from model_settings import get_chat_model_options, get_chat_model_settings_store, get_chat_model_spec
 from soul import get_soul_status
 from telegram_bot import get_telegram_bot, start_telegram_bot, stop_telegram_bot
@@ -125,6 +125,7 @@ def _import_spotify():
 
 FastAPI, CORSMiddleware, WebSocket, WebSocketDisconnect = _import_fastapi_components()
 chat_router, ai_state = _import_chat_state()
+register_alert_severity_classifier(ai_state.classify_alert_severity)
 spotipy, SpotifyOAuth = _import_spotify()
 
 _load_environment_file()
@@ -784,9 +785,11 @@ def _alert_settings_response() -> dict[str, object]:
     store = get_alert_settings_store()
     settings = store.get()
     telegram_settings = store.get_telegram()
+    behavior_settings = store.get_behavior()
     return {
         "status": "ok",
         "alerts": settings,
+        "behavior": behavior_settings,
         "telegram": telegram_settings,
         "regions": [{"region": region, "enabled": settings[region]} for region in ALERT_REGIONS],
     }
@@ -874,7 +877,7 @@ async def update_alert_settings(request: Request):
         if region in values:
             updates[region] = _coerce_settings_bool(values[region])
 
-    unknown_regions = sorted(key for key in values.keys() if key not in ALERT_REGIONS and key not in {"alerts", "telegram"})
+    unknown_regions = sorted(key for key in values.keys() if key not in ALERT_REGIONS and key not in {"alerts", "telegram", "behavior"})
     if unknown_regions:
         allowed = ", ".join(ALERT_REGIONS)
         raise HTTPException(status_code=400, detail=f"Unsupported alert region(s): {', '.join(unknown_regions)}. Allowed: {allowed}.")
@@ -890,6 +893,15 @@ async def update_alert_settings(request: Request):
         if "startup_notifications" in telegram_values:
             telegram_updates["startup_notifications"] = _coerce_settings_bool(telegram_values["startup_notifications"])
         store.update_telegram(telegram_updates)
+    behavior_values = payload.get("behavior")
+    if isinstance(behavior_values, dict):
+        unknown_behavior_keys = sorted(key for key in behavior_values.keys() if key != "global_extreme_alerts")
+        if unknown_behavior_keys:
+            raise HTTPException(status_code=400, detail=f"Unsupported alert behavior setting(s): {', '.join(unknown_behavior_keys)}.")
+        behavior_updates = {}
+        if "global_extreme_alerts" in behavior_values:
+            behavior_updates["global_extreme_alerts"] = _coerce_settings_bool(behavior_values["global_extreme_alerts"])
+        store.update_behavior(behavior_updates)
     return _alert_settings_response()
 
 
@@ -1134,7 +1146,13 @@ async def weather_open_meteo(
 @app.get("/integrations/swedish-alerts")
 async def swedish_alerts(limit: int = 12, region: str = "nacka"):
     """Aggregate Sweden-focused alerts/news from official APIs."""
-    return await asyncio.to_thread(fetch_swedish_alerts, limit=limit, region=region)
+    behavior_settings = get_alert_settings_store().get_behavior()
+    return await asyncio.to_thread(
+        fetch_swedish_alerts,
+        limit=limit,
+        region=region,
+        global_extreme_alerts=behavior_settings.get("global_extreme_alerts", True),
+    )
 
 # SPOTIFY INTEGRATION
 @app.get("/nova/spotify/login")
