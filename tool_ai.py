@@ -293,11 +293,6 @@ def run_get_weather(arguments: dict) -> str:
         return f"Weather for {location}: error — {e}"
 
 
-def run_activate_security_mode(arguments: dict) -> str:
-    logger.info("[tool] activate_security_mode()")
-    return "Security mode activated"
-
-
 def run_web_search(arguments: dict) -> str:
     query = (arguments.get("query") or "").strip()
     logger.info("[tool] web_search(query=%s)", query)
@@ -480,7 +475,6 @@ def run_get_current_music(arguments: dict) -> str:
 
 TOOL_RUNNERS = {
     "get_weather": run_get_weather,
-    "activate_security_mode": run_activate_security_mode,
     "web_search": run_web_search,
     "network_scan": run_network_scan,
     "play_music": run_play_music,

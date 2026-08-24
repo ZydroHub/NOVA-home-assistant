@@ -1,6 +1,6 @@
 # FunctionGemma Pocket (Q4_K_M)
 
-A 4-bit quantized GGUF model for **function/tool calling**, based on FunctionGemma and fine-tuned for a small set of tools (weather, security, web search, network scan). Optimized for edge and resource-constrained devices (e.g. Raspberry Pi) via llama.cpp.
+A 4-bit quantized GGUF model for **function/tool calling**, based on FunctionGemma and fine-tuned for a small set of tools (weather, web search, network scan). Optimized for edge and resource-constrained devices (e.g. Raspberry Pi) via llama.cpp.
 
 ---
 
@@ -28,7 +28,6 @@ Fine-tuning was done on ~1000 examples generated from a fixed tool schema so the
 | Tool | Description |
 |------|-------------|
 | `get_weather` | Weather or forecast for a location (`location`: string) |
-| `activate_security_mode` | Toggle Raspberry Pi security, cameras, PIR sensors (no args) |
 | `web_search` | Web search for current info (`query`: string) |
 | `network_scan` | Scan LAN for devices and open ports (no args) |
 
