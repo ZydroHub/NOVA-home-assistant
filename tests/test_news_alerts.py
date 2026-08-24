@@ -325,6 +325,37 @@ def test_fetch_swedish_alerts_uses_ai_severity_for_non_polisen_sources(monkeypat
     assert result["items"][0]["priority_rank"] == 100
 
 
+def test_krisinformation_area_object_list_is_displayed_as_text(monkeypatch):
+    import news_alerts
+
+    def fake_fetch_json(url, timeout=8.0):
+        if "polisen.se/api/events" in url:
+            return []
+        if "vmas" in url:
+            return {"vmas": []}
+        if "news" in url:
+            return {
+                "news": [
+                    {
+                        "Headline": "Skoldadet pa Brinellskolan i Fagersta",
+                        "Area": [{"Type": "Country", "Description": "Sverige", "GeometryInformation": None}],
+                        "Published": "2026-08-22T10:00:00Z",
+                        "Link": "https://example.invalid/kris",
+                    }
+                ]
+            }
+        if "henrikhjelm.se" in url:
+            return {}
+        return {}
+
+    monkeypatch.setattr(news_alerts, "fetch_json", fake_fetch_json)
+
+    result = news_alerts.fetch_swedish_alerts(limit=12, region="nacka")
+
+    assert result["items"][0]["location"] == "Sverige"
+    assert result["items"][0]["description"] == "Sverige"
+
+
 def test_krisinformation_floor_keeps_important_alerts_high(monkeypatch):
     import news_alerts
 

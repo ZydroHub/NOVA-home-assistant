@@ -759,6 +759,16 @@ def normalize_alert_item(item: dict, *, region: str, fallback_source: str = "Ale
 
 
 def _safe_field(value: object, default: str = "") -> str:
+    if isinstance(value, list):
+        parts = [_safe_field(item) for item in value]
+        return ", ".join(part for part in parts if part)
+    if isinstance(value, dict):
+        for key in ("Description", "description", "name", "Name", "title", "Title", "area", "Area"):
+            if key in value:
+                text = _safe_field(value.get(key))
+                if text:
+                    return text
+        return default
     text = str(value if value is not None else default)
     return re.sub(r"\s+", " ", text).strip()
 
