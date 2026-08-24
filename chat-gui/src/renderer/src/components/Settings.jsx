@@ -127,6 +127,7 @@ export default function Settings() {
     const [telegramSettingsPending, setTelegramSettingsPending] = React.useState(false);
     const [alertSettings, setAlertSettings] = React.useState({ nacka: true, stockholm: true });
     const [globalExtremeAlerts, setGlobalExtremeAlerts] = React.useState(true);
+    const [policeAiSeverity, setPoliceAiSeverity] = React.useState(true);
     const [alertSettingsLoading, setAlertSettingsLoading] = React.useState(true);
     const [alertSettingsPending, setAlertSettingsPending] = React.useState('');
     const [alertSettingsError, setAlertSettingsError] = React.useState('');
@@ -193,6 +194,7 @@ export default function Settings() {
                         stockholm: Boolean(result?.alerts?.stockholm),
                     });
                     setGlobalExtremeAlerts(result?.behavior?.global_extreme_alerts !== false);
+                    setPoliceAiSeverity(result?.behavior?.police_ai_severity !== false);
                     setTelegramStartupNotifications(result?.telegram?.startup_notifications !== false);
                     setAlertSettingsError('');
                 }
@@ -354,6 +356,7 @@ export default function Settings() {
                 stockholm: Boolean(result?.alerts?.stockholm),
             });
             setGlobalExtremeAlerts(result?.behavior?.global_extreme_alerts !== false);
+            setPoliceAiSeverity(result?.behavior?.police_ai_severity !== false);
             clearAlertsCache();
             window.dispatchEvent(new CustomEvent('nova-settings-updated'));
         } catch (error) {
@@ -379,6 +382,27 @@ export default function Settings() {
             window.dispatchEvent(new CustomEvent('nova-settings-updated'));
         } catch (error) {
             setAlertSettingsError(error?.message || 'Failed to update global extreme alerts.');
+        } finally {
+            setAlertSettingsPending('');
+        }
+    };
+
+    const handlePoliceAiSeverityChange = async (enabled) => {
+        if (alertSettingsPending) return;
+
+        setAlertSettingsPending('police_ai_severity');
+        setAlertSettingsError('');
+        try {
+            const result = await apiFetch('/settings/alerts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ behavior: { police_ai_severity: enabled } }),
+            });
+            setPoliceAiSeverity(result?.behavior?.police_ai_severity !== false);
+            clearAlertsCache();
+            window.dispatchEvent(new CustomEvent('nova-settings-updated'));
+        } catch (error) {
+            setAlertSettingsError(error?.message || 'Failed to update police AI severity.');
         } finally {
             setAlertSettingsPending('');
         }
@@ -616,6 +640,19 @@ export default function Settings() {
                                         label="Global extreme alerts"
                                     />
                                     {alertSettingsPending === 'global_extreme_alerts' ? <Loader2 size={16} className="ml-2 animate-spin text-cyan-100/70" /> : null}
+                                </SettingRow>
+                                <SettingRow
+                                    icon={Brain}
+                                    title="Police AI severity"
+                                    description={policeAiSeverity ? 'NOVA ranks Polisen alerts' : 'Polisen alerts show without ranking'}
+                                >
+                                    <ToggleSwitch
+                                        checked={policeAiSeverity}
+                                        onChange={handlePoliceAiSeverityChange}
+                                        disabled={alertSettingsLoading || Boolean(alertSettingsPending)}
+                                        label="Police AI severity"
+                                    />
+                                    {alertSettingsPending === 'police_ai_severity' ? <Loader2 size={16} className="ml-2 animate-spin text-cyan-100/70" /> : null}
                                 </SettingRow>
                                 {[
                                     ['nacka', 'Nacka', 'Local municipal alerts'],

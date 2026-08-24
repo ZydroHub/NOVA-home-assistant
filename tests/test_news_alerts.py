@@ -260,6 +260,39 @@ def test_fetch_swedish_alerts_schedules_ai_severity_for_polisen_without_blocking
     assert scheduled[0]["source"] == "Polisen"
 
 
+def test_fetch_swedish_alerts_can_disable_polisen_ai_severity(monkeypatch):
+    import news_alerts
+
+    def fake_fetch_json(url, timeout=8.0):
+        if "polisen.se/api/events" in url:
+            return [
+                {
+                    "name": "Trafikolycka",
+                    "summary": "Flera fordon inblandade",
+                    "datetime": "2026-08-22T10:00:00Z",
+                    "location": "Stockholm",
+                    "url": "https://example.invalid/polisen",
+                }
+            ]
+        if "krisinformation.se" in url:
+            return {}
+        if "henrikhjelm.se" in url:
+            return {}
+        return {}
+
+    scheduled = []
+    monkeypatch.setattr(news_alerts, "fetch_json", fake_fetch_json)
+    monkeypatch.setattr(news_alerts, "_schedule_alert_severity_background", lambda **kwargs: scheduled.append(kwargs))
+
+    result = news_alerts.fetch_swedish_alerts(limit=12, region="stockholm", police_ai_severity=False)
+
+    assert result["items"][0]["source"] == "Polisen"
+    assert result["items"][0]["priority_label"] == ""
+    assert result["items"][0]["priority"] == ""
+    assert result["items"][0]["priority_rank"] == 0
+    assert scheduled == []
+
+
 def test_fetch_swedish_alerts_uses_ai_severity_for_non_polisen_sources(monkeypatch):
     import news_alerts
 

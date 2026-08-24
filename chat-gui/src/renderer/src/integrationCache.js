@@ -68,7 +68,7 @@ function normalizeAlertItem(item) {
     const title = toDisplayText(item?.title) || toDisplayText(item?.Description) || 'Untitled alert';
     const location = toDisplayText(item?.location ?? item?.Area ?? item?.area);
     const published = toDisplayText(item?.published);
-    const priorityLabel = toDisplayText(item?.priority_label) || 'News';
+    const priorityLabel = toDisplayText(item?.priority_label ?? item?.priority);
     const priorityRank = Number(item?.priority_rank) || 0;
 
     return {

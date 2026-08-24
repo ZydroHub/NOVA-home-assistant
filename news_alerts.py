@@ -733,7 +733,11 @@ def normalize_alert_item(item: dict, *, region: str, fallback_source: str = "Ale
         priority_rank = int(item.get("priority_rank") or 0)
     except (TypeError, ValueError):
         priority_rank = 0
-    priority_label = str(item.get("priority_label") or item.get("priority") or alert_priority(source, title)[1]).strip() or "News"
+    if "priority_label" in item or "priority" in item:
+        raw_priority_label = item.get("priority_label") if "priority_label" in item else item.get("priority")
+        priority_label = str(raw_priority_label or "").strip()
+    else:
+        priority_label = str(alert_priority(source, title)[1]).strip()
 
     normalized = {
         **item,
@@ -759,7 +763,13 @@ def _safe_field(value: object, default: str = "") -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def fetch_swedish_alerts(limit: int = 12, region: str = "nacka", *, global_extreme_alerts: bool = True) -> dict:
+def fetch_swedish_alerts(
+    limit: int = 12,
+    region: str = "nacka",
+    *,
+    global_extreme_alerts: bool = True,
+    police_ai_severity: bool = True,
+) -> dict:
     selected_region = normalize_alert_region(region)
     try:
         limit_value = max(1, int(limit))
@@ -770,7 +780,7 @@ def fetch_swedish_alerts(limit: int = 12, region: str = "nacka", *, global_extre
     baseline_limit = 180 if selected_region == "sweden" else max(12, limit_value * 3)
     fetch_limit = max(limit_value, baseline_limit)
     now = datetime.now()
-    cache_key = f"{selected_region}:global_extreme={bool(global_extreme_alerts)}"
+    cache_key = f"{selected_region}:global_extreme={bool(global_extreme_alerts)}:police_ai={bool(police_ai_severity)}"
 
     with _SWEDISH_ALERTS_CACHE_LOCK:
         cached_entry = _SWEDISH_ALERTS_CACHE.get(cache_key)
@@ -812,20 +822,27 @@ def fetch_swedish_alerts(limit: int = 12, region: str = "nacka", *, global_extre
             if not is_within_last_days(published, days=days_back):
                 continue
             region_match = match_region_text(selected_region, title, location, summary)
-            if not region_match and (not global_extreme_alerts or not _alert_should_bypass_region("Polisen", title, summary)):
+            if not region_match and (
+                not police_ai_severity
+                or not global_extreme_alerts
+                or not _alert_should_bypass_region("Polisen", title, summary)
+            ):
                 continue
 
             url = entry.get("url") or "https://polisen.se/aktuellt/"
-            priority_rank, priority_label = polisen_ai_severity(
-                title=title,
-                summary=summary,
-                location=location,
-                published=published,
-                url=str(url),
-                wait_for_ai=False,
-            )
-            if not _include_alert_for_region(selected_region, priority_label, title, location, summary, global_extreme_alerts=global_extreme_alerts):
-                continue
+            if police_ai_severity:
+                priority_rank, priority_label = polisen_ai_severity(
+                    title=title,
+                    summary=summary,
+                    location=location,
+                    published=published,
+                    url=str(url),
+                    wait_for_ai=False,
+                )
+                if not _include_alert_for_region(selected_region, priority_label, title, location, summary, global_extreme_alerts=global_extreme_alerts):
+                    continue
+            else:
+                priority_rank, priority_label = 0, ""
             items.append(
                 {
                     "source": "Polisen",
@@ -836,6 +853,7 @@ def fetch_swedish_alerts(limit: int = 12, region: str = "nacka", *, global_extre
                     "location": location,
                     "priority_rank": priority_rank,
                     "priority_label": priority_label,
+                    "priority": priority_label,
                 }
             )
         logger.debug("Polisen: fetched %d items", len(polisen_data_cache))
@@ -1023,14 +1041,17 @@ def fetch_swedish_alerts(limit: int = 12, region: str = "nacka", *, global_extre
             published = entry.get("datetime") or ""
             location = polisen_location_name(entry)
             url = entry.get("url") or "https://polisen.se/aktuellt/"
-            priority_rank, priority_label = polisen_ai_severity(
-                title=title,
-                summary=str(summary),
-                location=location,
-                published=str(published),
-                url=str(url),
-                wait_for_ai=False,
-            )
+            if police_ai_severity:
+                priority_rank, priority_label = polisen_ai_severity(
+                    title=title,
+                    summary=str(summary),
+                    location=location,
+                    published=str(published),
+                    url=str(url),
+                    wait_for_ai=False,
+                )
+            else:
+                priority_rank, priority_label = 0, ""
             deduped.append(
                 {
                     "source": "Polisen",
@@ -1041,6 +1062,7 @@ def fetch_swedish_alerts(limit: int = 12, region: str = "nacka", *, global_extre
                     "location": location,
                     "priority_rank": priority_rank,
                     "priority_label": priority_label,
+                    "priority": priority_label,
                 }
             )
             if len(deduped) >= limit_value:

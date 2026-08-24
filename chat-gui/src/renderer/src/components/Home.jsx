@@ -258,6 +258,7 @@ export default function Home() {
                         {alertsSorted.length > 0 ? alertsSorted.map((item, idx) => {
                             const extreme = isExtremeAlert(item);
                             const vma = isVmaAlert(item);
+                            const priorityLabel = String(item.priority_label || '').trim();
                             return (
                                 <div
                                     key={`${item.title}-${idx}`}
@@ -271,7 +272,7 @@ export default function Home() {
                                     )}
                                     <div className="alert-row-top">
                                         <span className="alert-source">{item.source || 'Alert'}</span>
-                                        <span className="alert-priority">{item.priority_label || 'News'}</span>
+                                        {priorityLabel ? <span className="alert-priority">{priorityLabel}</span> : null}
                                     </div>
                                     <span className="alert-title">{item.title}</span>
                                     {extreme && item.location && <span className="alert-emergency-location">{item.location}</span>}

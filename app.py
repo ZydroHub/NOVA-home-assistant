@@ -895,12 +895,17 @@ async def update_alert_settings(request: Request):
         store.update_telegram(telegram_updates)
     behavior_values = payload.get("behavior")
     if isinstance(behavior_values, dict):
-        unknown_behavior_keys = sorted(key for key in behavior_values.keys() if key != "global_extreme_alerts")
+        unknown_behavior_keys = sorted(
+            key for key in behavior_values.keys()
+            if key not in {"global_extreme_alerts", "police_ai_severity"}
+        )
         if unknown_behavior_keys:
             raise HTTPException(status_code=400, detail=f"Unsupported alert behavior setting(s): {', '.join(unknown_behavior_keys)}.")
         behavior_updates = {}
         if "global_extreme_alerts" in behavior_values:
             behavior_updates["global_extreme_alerts"] = _coerce_settings_bool(behavior_values["global_extreme_alerts"])
+        if "police_ai_severity" in behavior_values:
+            behavior_updates["police_ai_severity"] = _coerce_settings_bool(behavior_values["police_ai_severity"])
         store.update_behavior(behavior_updates)
     return _alert_settings_response()
 
@@ -1152,6 +1157,7 @@ async def swedish_alerts(limit: int = 12, region: str = "nacka"):
         limit=limit,
         region=region,
         global_extreme_alerts=behavior_settings.get("global_extreme_alerts", True),
+        police_ai_severity=behavior_settings.get("police_ai_severity", True),
     )
 
 # SPOTIFY INTEGRATION

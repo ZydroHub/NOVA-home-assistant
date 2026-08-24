@@ -27,6 +27,7 @@ DEFAULT_TELEGRAM_SETTINGS = {
 }
 DEFAULT_ALERT_BEHAVIOR_SETTINGS = {
     "global_extreme_alerts": True,
+    "police_ai_severity": True,
 }
 DEFAULT_VOICE_SETTINGS = {
     "language": (os.getenv("WHISPER_LANGUAGE", "en") or "en").strip().lower(),
@@ -207,6 +208,8 @@ class AlertSettingsStore:
         result: dict[str, bool] = {}
         if "global_extreme_alerts" in payload:
             result["global_extreme_alerts"] = self._coerce_bool(payload["global_extreme_alerts"])
+        if "police_ai_severity" in payload:
+            result["police_ai_severity"] = self._coerce_bool(payload["police_ai_severity"])
         return result
 
     def _normalize_voice_payload(self, payload: dict[str, object], *, allow_partial: bool = False) -> dict[str, object]:

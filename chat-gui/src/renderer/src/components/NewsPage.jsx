@@ -228,6 +228,7 @@ export default function NewsPage() {
         if (label === 'LOW') return { text: 'LOW', color: 'bg-cyan-500/10 border-cyan-300/30' };
 
         const rank = Number(item?.priority_rank) || 0;
+        if (rank <= 0) return null;
         if (rank >= 80) return { text: 'High', color: 'bg-red-500/75 border-red-400/60' };
         if (rank >= 60) return { text: 'Medium', color: 'bg-yellow-500/60 border-yellow-400/50' };
         return { text: 'Low', color: 'bg-cyan-500/10 border-cyan-300/30' };
@@ -478,6 +479,7 @@ export default function NewsPage() {
                                                         </div>
                                                         {(() => {
                                                             const p = priorityLabelFromItem(item);
+                                                            if (!p) return null;
                                                             return (
                                                                 <div className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold uppercase tracking-[0.12em] ${p.color} text-white`}>
                                                                     {p.text}
