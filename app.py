@@ -538,6 +538,22 @@ def _spotify_duck_blocking(
 
         chosen_id = str(chosen.get("id") or "") or None
         current_volume = _clamp_spotify_volume_percent(chosen.get("volume_percent"), 0)
+        if current_volume <= target_volume:
+            logger.info(
+                "Spotify duck skipped because current volume %s is already at or below target %s",
+                current_volume,
+                target_volume,
+            )
+            return {
+                "status": "skipped",
+                "active": False,
+                "reason": "already_below_duck_volume",
+                "device_id": chosen_id,
+                "device_name": chosen.get("name"),
+                "volume_percent": current_volume,
+                "target_volume_percent": target_volume,
+            }
+
         try:
             client.volume(target_volume, device_id=chosen_id)
         except Exception as exc:

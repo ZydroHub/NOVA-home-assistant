@@ -499,6 +499,34 @@ def test_spotify_duck_skips_when_no_active_device(monkeypatch):
     assert fake.volume_calls == []
 
 
+def test_spotify_duck_never_raises_music_volume(monkeypatch):
+    """Voice ducking should only lower music, never raise quiet playback up to the duck target."""
+    import app as app_module
+
+    class FakeSpotify:
+        def __init__(self):
+            self.volume_calls = []
+
+        def devices(self):
+            return {"devices": [{"id": "speaker", "name": "NOVA", "is_active": True, "volume_percent": 8}]}
+
+        def volume(self, volume_percent, device_id=None):
+            self.volume_calls.append((volume_percent, device_id))
+
+    fake = FakeSpotify()
+    monkeypatch.setattr(app_module, "_spotify_client", lambda: fake)
+    with app_module._SPOTIFY_DUCK_LOCK:
+        app_module._SPOTIFY_DUCK_STATE.update({"active": False, "device_id": None, "volume_percent": None})
+
+    result = app_module._spotify_duck_blocking(volume_percent=20)
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "already_below_duck_volume"
+    assert result["volume_percent"] == 8
+    assert fake.volume_calls == []
+    assert app_module._SPOTIFY_DUCK_STATE == {"active": False, "device_id": None, "volume_percent": None}
+
+
 def test_spotify_duck_does_not_mark_state_active_when_player_disappears(monkeypatch):
     """A Spotify race during ducking leaves no stale volume restore state."""
     import app as app_module
