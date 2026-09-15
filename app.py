@@ -44,6 +44,7 @@ from config import (
 )
 from news_alerts import fetch_swedish_alerts, register_alert_severity_classifier
 from model_settings import get_chat_model_options, get_chat_model_settings_store, get_chat_model_spec
+from tts_model_settings import get_tts_voice_options, get_tts_voice_settings_store, get_tts_voice_spec
 from soul import get_soul_status
 from telegram_bot import get_telegram_bot, start_telegram_bot, stop_telegram_bot
 from quiet_io import silence_stderr_fd
@@ -870,6 +871,19 @@ def _model_settings_response() -> dict[str, object]:
     }
 
 
+def _tts_voice_settings_response() -> dict[str, object]:
+    selected_voice = get_tts_voice_settings_store().get_selected_voice()
+    runtime = ai_state.get_tts_runtime_status()
+    return {
+        "status": "ok",
+        "selected_voice": selected_voice,
+        "active_voice": runtime["active_voice"],
+        "switching": runtime["switching"],
+        "error": runtime["error"],
+        "options": get_tts_voice_options(),
+    }
+
+
 @app.get("/settings/alerts")
 async def get_alert_settings():
     """Return shared ON/OFF settings for alert regions."""
@@ -990,6 +1004,37 @@ async def update_model_settings(request: Request):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     get_chat_model_settings_store().set_selected_model(model_id)
     return _model_settings_response()
+
+
+@app.get("/settings/tts")
+async def get_tts_voice_settings():
+    """Return selectable Piper voice-quality options and their runtime status."""
+    return _tts_voice_settings_response()
+
+
+@app.post("/settings/tts", dependencies=CONTROL_AUTH)
+async def update_tts_voice_settings(request: Request):
+    """Persist a Piper voice-quality choice and load it in the background."""
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON.")
+
+    if not isinstance(payload, dict) or set(payload) != {"voice"} or not isinstance(payload.get("voice"), str):
+        raise HTTPException(status_code=400, detail="Request body must contain only a string 'voice' value.")
+
+    voice_id = payload["voice"].strip()
+    try:
+        get_tts_voice_spec(voice_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        ai_state.request_tts_voice_switch(voice_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    get_tts_voice_settings_store().set_selected_voice(voice_id)
+    return _tts_voice_settings_response()
 
 
 @app.get("/system/stats")

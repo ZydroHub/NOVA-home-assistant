@@ -281,6 +281,26 @@ def test_model_settings_api_get_and_rejects_invalid_or_remote_changes():
     assert rejected.status_code == 401
 
 
+def test_tts_voice_settings_api_get_and_rejects_invalid_or_remote_changes():
+    """Piper voice quality is readable locally but protected when changed."""
+    from fastapi.testclient import TestClient
+    from app import app
+
+    client = TestClient(app)
+    response = client.get("/settings/tts")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["selected_voice"] == "high"
+    assert {item["id"] for item in data["options"]} == {"low", "medium", "high"}
+
+    invalid = client.post("/settings/tts", json={"voice": "ultra"}, headers=auth_headers())
+    assert invalid.status_code == 400
+
+    remote_client = TestClient(app, client=("192.168.1.50", 50000))
+    rejected = remote_client.post("/settings/tts", json={"voice": "medium"})
+    assert rejected.status_code == 401
+
+
 def test_spotify_device_selection_prefers_requested_device():
     """Spotify controls should target the dashboard-selected device when provided."""
     from fastapi import HTTPException

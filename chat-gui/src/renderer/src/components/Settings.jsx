@@ -121,6 +121,13 @@ export default function Settings() {
     const [modelSettingsPending, setModelSettingsPending] = React.useState(false);
     const [modelSwitching, setModelSwitching] = React.useState(false);
     const [modelSettingsError, setModelSettingsError] = React.useState('');
+    const [ttsOptions, setTtsOptions] = React.useState([]);
+    const [selectedTtsVoice, setSelectedTtsVoice] = React.useState('');
+    const [activeTtsVoice, setActiveTtsVoice] = React.useState('');
+    const [ttsSettingsLoading, setTtsSettingsLoading] = React.useState(true);
+    const [ttsSettingsPending, setTtsSettingsPending] = React.useState(false);
+    const [ttsSwitching, setTtsSwitching] = React.useState(false);
+    const [ttsSettingsError, setTtsSettingsError] = React.useState('');
     const [telegramTestState, setTelegramTestState] = React.useState('idle');
     const [telegramTestError, setTelegramTestError] = React.useState('');
     const [telegramStartupNotifications, setTelegramStartupNotifications] = React.useState(true);
@@ -179,6 +186,38 @@ export default function Settings() {
         return () => {
             window.removeEventListener('storage', syncHiddenTabs);
             window.removeEventListener('nova-settings-updated', syncHiddenTabs);
+        };
+    }, []);
+
+    React.useEffect(() => {
+        let cancelled = false;
+
+        const loadTtsSettings = async () => {
+            try {
+                const result = await apiFetch('/settings/tts');
+                if (!cancelled) {
+                    setTtsOptions(Array.isArray(result?.options) ? result.options : []);
+                    setSelectedTtsVoice(typeof result?.selected_voice === 'string' ? result.selected_voice : '');
+                    setActiveTtsVoice(typeof result?.active_voice === 'string' ? result.active_voice : '');
+                    setTtsSwitching(Boolean(result?.switching));
+                    setTtsSettingsError(result?.error || '');
+                }
+            } catch (error) {
+                if (!cancelled) {
+                    setTtsSettingsError(error?.message || 'Failed to load voice quality settings.');
+                }
+            } finally {
+                if (!cancelled) {
+                    setTtsSettingsLoading(false);
+                }
+            }
+        };
+
+        loadTtsSettings();
+        const pollId = window.setInterval(loadTtsSettings, 1500);
+        return () => {
+            cancelled = true;
+            window.clearInterval(pollId);
         };
     }, []);
 
@@ -337,6 +376,29 @@ export default function Settings() {
             setModelSettingsError(error?.message || 'Failed to switch chat model.');
         } finally {
             setModelSettingsPending(false);
+        }
+    };
+
+    const handleTtsVoiceChange = async (voiceId) => {
+        if (!voiceId || ttsSettingsLoading || ttsSettingsPending || ttsSwitching || voiceId === activeTtsVoice) return;
+
+        setTtsSettingsPending(true);
+        setTtsSettingsError('');
+        try {
+            const result = await apiFetch('/settings/tts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ voice: voiceId }),
+            });
+            setTtsOptions(Array.isArray(result?.options) ? result.options : []);
+            setSelectedTtsVoice(typeof result?.selected_voice === 'string' ? result.selected_voice : voiceId);
+            setActiveTtsVoice(typeof result?.active_voice === 'string' ? result.active_voice : '');
+            setTtsSwitching(Boolean(result?.switching));
+            setTtsSettingsError(result?.error || '');
+        } catch (error) {
+            setTtsSettingsError(error?.message || 'Failed to switch voice quality.');
+        } finally {
+            setTtsSettingsPending(false);
         }
     };
 
@@ -585,6 +647,41 @@ export default function Settings() {
                             {modelSettingsError ? (
                                 <div className="mt-4 rounded-2xl border border-rose-300/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
                                     {modelSettingsError}
+                                </div>
+                            ) : null}
+                        </Panel>
+
+                        <Panel title="Voice Quality" icon={Volume2}>
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                                {ttsOptions.map((voice) => {
+                                    const active = voice.id === activeTtsVoice;
+                                    const selected = voice.id === selectedTtsVoice;
+                                    const busy = ttsSwitching && selected;
+                                    return (
+                                        <button
+                                            key={voice.id}
+                                            type="button"
+                                            onClick={() => handleTtsVoiceChange(voice.id)}
+                                            disabled={ttsSettingsLoading || ttsSettingsPending || ttsSwitching || active}
+                                            className={`min-h-[116px] rounded-[24px] border p-4 text-left transition-all duration-200 hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 ${
+                                                active
+                                                    ? 'border-cyan-200/70 bg-cyan-300/[0.13] shadow-[0_0_32px_rgba(34,211,238,0.16)]'
+                                                    : 'border-white/10 bg-white/[0.035] hover:border-cyan-100/[0.28] hover:bg-white/[0.055]'
+                                            }`}
+                                        >
+                                            <div className="flex items-center justify-between gap-3">
+                                                <span className="font-['Plus_Jakarta_Sans'] text-base font-bold text-cyan-50">{voice.label}</span>
+                                                {busy ? <Loader2 size={17} className="animate-spin text-cyan-100" /> : active ? <Check size={17} className="text-cyan-100" /> : null}
+                                            </div>
+                                            <div className="mt-2 text-sm text-cyan-100/50">{voice.description}</div>
+                                            <div className="mt-2 text-xs text-cyan-100/35">{voice.size_note}</div>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                            {ttsSettingsError ? (
+                                <div className="mt-4 rounded-2xl border border-rose-300/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+                                    {ttsSettingsError}
                                 </div>
                             ) : null}
                         </Panel>

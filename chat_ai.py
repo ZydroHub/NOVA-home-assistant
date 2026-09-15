@@ -34,6 +34,7 @@ except ImportError as exc:
 from pydantic import BaseModel
 from wake_word import DEFAULT_WAKE_COMMAND_MODE, DEFAULT_WAKE_PHRASES, WakeWordDetector
 from soul import build_soul_system_prompt, register_memory_duplicate_checker, remember_from_interaction
+from tts_model_settings import get_tts_voice_settings_store, get_tts_voice_spec
 
 with silence_stderr_fd():
     from stt_whisper import STTEngine as WhisperEngine
@@ -467,15 +468,21 @@ class ConversationManager:
 class AIState:
     def __init__(self):
         self.llm = None
+        self._tts_state_lock = threading.Lock()
+        self._active_tts_voice_id: str | None = None
+        self._tts_switching = False
+        self._tts_error = ""
         if os.environ.get("SKIP_MODEL_LOAD"):
             self.stt = _NullSpeechEngine()
             self.vosk = _NullSpeechEngine()
             self.tts = _NullAudio()
         else:
+            selected_tts_voice = get_tts_voice_settings_store().get_selected_voice()
             with silence_stderr_fd():
                 self.stt = WhisperEngine()
                 self.vosk = VoskEngine()
-                self.tts = PocketAudio()
+                self.tts = PocketAudio(get_tts_voice_spec(selected_tts_voice).model_name)
+            self._active_tts_voice_id = selected_tts_voice
         self.conv_manager = ConversationManager(CONVERSATIONS_FILE)
         self.is_recording = False
         self.is_vosk_recording = False
@@ -672,6 +679,71 @@ class AIState:
                 "switching": self._model_switching,
                 "error": self._model_error or None,
             }
+
+    def get_tts_runtime_status(self) -> dict[str, object]:
+        with self._tts_state_lock:
+            return {
+                "active_voice": self._active_tts_voice_id,
+                "switching": self._tts_switching,
+                "error": self._tts_error or None,
+            }
+
+    def request_tts_voice_switch(self, voice_id: str) -> bool:
+        """Start a non-blocking Piper voice replacement."""
+        get_tts_voice_spec(voice_id)
+        if os.environ.get("SKIP_MODEL_LOAD"):
+            with self._tts_state_lock:
+                self._active_tts_voice_id = voice_id
+                self._tts_error = ""
+            return False
+
+        with self._tts_state_lock:
+            if self._tts_switching:
+                raise RuntimeError("A voice quality switch is already in progress.")
+            if self._active_tts_voice_id == voice_id:
+                self._tts_error = ""
+                return False
+            self._tts_switching = True
+            self._tts_error = ""
+
+        self.interrupt_voice_pipeline()
+        threading.Thread(
+            target=self._switch_tts_voice_worker,
+            args=(voice_id,),
+            daemon=True,
+            name="nova-tts-voice-switch",
+        ).start()
+        return True
+
+    def _switch_tts_voice_worker(self, voice_id: str) -> None:
+        replacement = None
+        previous_tts = None
+        try:
+            voice = get_tts_voice_spec(voice_id)
+            replacement = PocketAudio(voice.model_name)
+            with self._tts_state_lock:
+                previous_tts = self.tts
+                self.tts = replacement
+                self._active_tts_voice_id = voice_id
+            replacement = None
+            logger.info("TTS voice quality switched to %s.", voice_id)
+        except Exception as exc:
+            logger.exception("TTS voice switch to %s failed", voice_id)
+            with self._tts_state_lock:
+                self._tts_error = f"Could not load {voice_id}: {exc}"
+        finally:
+            if previous_tts is not None:
+                try:
+                    previous_tts.terminate()
+                except Exception as exc:
+                    logger.warning("Previous TTS engine cleanup failed: %s", exc)
+            if replacement is not None:
+                try:
+                    replacement.terminate()
+                except Exception:
+                    pass
+            with self._tts_state_lock:
+                self._tts_switching = False
 
     def request_model_switch(self, model_id: str) -> bool:
         """Start a non-blocking chat-model replacement. Returns True when loading starts."""

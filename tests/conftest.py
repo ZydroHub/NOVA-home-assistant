@@ -33,6 +33,11 @@ _temp_model_settings_file.write("{}")
 _temp_model_settings_file.close()
 os.environ["MODEL_SETTINGS_FILE"] = _temp_model_settings_file.name
 
+_temp_tts_settings_file = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+_temp_tts_settings_file.write("{}")
+_temp_tts_settings_file.close()
+os.environ["TTS_SETTINGS_FILE"] = _temp_tts_settings_file.name
+
 
 @pytest.fixture
 def temp_storage_path():

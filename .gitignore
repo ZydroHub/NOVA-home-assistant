@@ -44,6 +44,8 @@ telegram_subscriptions.json
 alert_settings.json
 model_settings.json
 model_settings.json.tmp
+tts_settings.json
+tts_settings.json.tmp
 training
 *.gguf
 whisper-tiny/
