@@ -7,6 +7,8 @@ const WebSocketContext = createContext(null);
 const KEY_VOICE_AUTO_RECONNECT = 'nova.voiceAutoReconnect';
 const MUSIC_DUCK_VOLUME_PERCENT = 20;
 const MUSIC_DUCK_ACTIVE_STATUSES = new Set(['listening', 'transcribing', 'thinking', 'generating', 'speaking']);
+const TTS_PLAYBACK_GAIN = 2.2;
+const TTS_SOFT_LIMIT_STRENGTH = 1.6;
 
 function readVoiceReconnectEnabled() {
     try {
@@ -15,6 +17,11 @@ function readVoiceReconnectEnabled() {
     } catch {
         return true;
     }
+}
+
+function applyTtsGain(sample) {
+    const boosted = sample * TTS_PLAYBACK_GAIN;
+    return Math.tanh(boosted * TTS_SOFT_LIMIT_STRENGTH) / Math.tanh(TTS_SOFT_LIMIT_STRENGTH);
 }
 
 export function WebSocketProvider({ children }) {
@@ -184,7 +191,7 @@ export function WebSocketProvider({ children }) {
                 const hi = binary.charCodeAt(i * 2 + 1);
                 let value = (hi << 8) | lo;
                 if (value >= 0x8000) value -= 0x10000;
-                channel[i] = value / 32768;
+                channel[i] = applyTtsGain(value / 32768);
             }
 
             const source = audioContext.createBufferSource();

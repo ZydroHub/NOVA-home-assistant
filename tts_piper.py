@@ -24,7 +24,7 @@ with silence_stderr_fd():
 TTS_OUTPUT_DEVICE_INDEX = os.environ.get("TTS_OUTPUT_DEVICE_INDEX", "").strip()
 TTS_OUTPUT_DEVICE_NAME = os.environ.get("TTS_OUTPUT_DEVICE_NAME", "").strip()
 TTS_ALSA_DEVICE = os.environ.get("TTS_ALSA_DEVICE", "").strip()
-DEFAULT_PIPER_MODEL = os.environ.get("TTS_PIPER_MODEL", "en_US-lessac-medium").strip() or "en_US-lessac-medium"
+DEFAULT_PIPER_MODEL = os.environ.get("TTS_PIPER_MODEL", "en_US-lessac-high").strip() or "en_US-lessac-high"
 
 # Sentence-ending punctuation (split on these, keep delimiter with sentence)
 SENTENCE_END_RE = re.compile(r'(?<=[.!?\n])\s*')
